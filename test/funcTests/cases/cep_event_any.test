@@ -1,0 +1,92 @@
+#
+# FILE            cep_event_any.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Named events and the pattern 'any': one rule, two events (the switch's upper and lower button), either fires it.
+# A second rule declares the same two events but its pattern names only one: the other is declared, not used.
+#
+--NAME--
+when.events + pattern any: either event fires the rule; a pattern naming one event uses only that one
+
+--TAGS--
+cep pattern any
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, a rule on 'any' of two events, a rule on one of the two, corCep started"
+echo "================================================================================================"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:room-2-14", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}, "lowerPress": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}, "level": {"type": "Property", "value": 10}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-either", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {
+    "events": [
+      {"event": "up",   "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"},
+      {"event": "down", "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "lowerPress"}
+    ],
+    "pattern": {"any": ["up", "down"]}}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "toggle": "on"}]}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-down-only", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {
+    "events": [
+      {"event": "up",   "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"},
+      {"event": "down", "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "lowerPress"}
+    ],
+    "pattern": "down"}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"level": 1}}]}}'
+cepStart
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+subsAwait 2
+echo
+echo
+
+
+echo "02. upperPress - 'either' fires (the light on), 'down-only' does not (level 10)"
+echo "==============================================================================="
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"upperPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Light:room-2-14-desk on true
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+echo
+echo
+
+
+echo "03. lowerPress - both fire: the light off, level 1"
+echo "=================================================="
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"lowerPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Light:room-2-14-desk level 1
+attrAwait urn:ngsi-ld:Light:room-2-14-desk on false
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+echo "'down-only' fired: $(grep -c 'room-2-14-down-only fired' "$CEP_TEST_DIR/corCep.log") time(s)"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, a rule on 'any' of two events, a rule on one of the two, corCep started
+================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+2 rules, 2 subscriptions
+
+
+02. upperPress - 'either' fires (the light on), 'down-only' does not (level 10)
+===============================================================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "level": 10, "on": true, "type": "Light"}
+
+
+03. lowerPress - both fire: the light off, level 1
+==================================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "level": 1, "on": false, "type": "Light"}
+'down-only' fired: 1 time(s)
+
+

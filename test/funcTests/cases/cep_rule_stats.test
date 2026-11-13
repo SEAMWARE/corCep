@@ -1,0 +1,100 @@
+#
+# FILE            cep_rule_stats.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# A rule's statistics, written by corCep to its Rule entity: fired (a count), firedAt, lastError (with the time
+# as observedAt). corCep runs with --stats-interval 0: written at once.
+#
+#   - the Rule subscription watches when/then/enabled/name only: writing the statistics does not read the rules again
+#   - the count goes on across a restart: from the Rule entity's 'fired'
+#
+--NAME--
+Rule statistics: fired, firedAt, lastError written to the Rule entity; no reload from them; the count survives a restart
+
+--TAGS--
+cep stats
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, a rule with a second action on an entity that does not exist, corCep started"
+echo "======================================================================================================"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:room-2-14", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-upper", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "toggle": "on"},
+                                            {"entity": "urn:ngsi-ld:Light:nowhere", "set": {"on": true}}]}}'
+cepStart --stats-interval 0
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+subsAwait 1
+echo
+echo
+
+
+echo "02. Pressed twice - fired 2, firedAt, lastError: the second action, 404"
+echo "======================================================================="
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"upperPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Rule:room-2-14-upper fired 1
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"upperPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Rule:room-2-14-upper fired 2
+curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/urn:ngsi-ld:Rule:room-2-14-upper?attrs=fired,firedAt,lastError" |
+  python3 -I -c 'import json, sys; e = json.load(sys.stdin); [print(k, json.dumps(e[k], sort_keys=True)) for k in ("fired", "firedAt", "lastError")]'
+echo
+echo
+
+
+echo "03. The rules were read once - the statistics written did not read them again"
+echo "============================================================================="
+grep -c " rules\?, [0-9]* subscriptions\?$" "$CEP_TEST_DIR/corCep.log"
+echo
+echo
+
+
+echo "04. corCep restarted, pressed again - fired 3"
+echo "============================================="
+cepStop
+cepStart --stats-interval 0
+subsAwait 1
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"upperPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Rule:room-2-14-upper fired 3
+echo "fired: 3"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, a rule with a second action on an entity that does not exist, corCep started
+======================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+1 rule, 1 subscription
+
+
+02. Pressed twice - fired 2, firedAt, lastError: the second action, 404
+=======================================================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+fired {"type": "Property", "value": 2}
+firedAt {"type": "Property", "value": {"@type": "DateTime", "@value": "REGEX(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z)"}}
+lastError {"observedAt": "REGEX(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z)", "type": "Property", "value": "action 2: PATCH urn:ngsi-ld:Light:nowhere: {\"type\":\"https://uri.etsi.org/ngsi-ld/errors/ResourceNotFound\",\"title\":\"Not Found\",\"status\":404,\"detail\":\"entity 'urn:ngsi-ld:Light:nowhere' not found\"}"}
+
+
+03. The rules were read once - the statistics written did not read them again
+=============================================================================
+1
+
+
+04. corCep restarted, pressed again - fired 3
+=============================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+fired: 3
+
+

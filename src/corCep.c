@@ -7,6 +7,7 @@
 // corCep - an NGSI-LD complex event processor (doc/design.md)
 //
 //   corCep --broker http://host:port [--port 7602] [--notify-url http://host:7602] [--tenant T] [--token-env VAR]
+//          [--stats-interval 10]
 //
 #include <stdarg.h>                              // va_list
 #include <stdio.h>                               // fprintf, vfprintf
@@ -48,6 +49,7 @@ static CorArg options[] =
   { "--notify-url", "-nu", CorArgString, &notifyUrlArg, CorArgOpt, NULL,      NULL,  NULL,        "the URL the broker reaches corCep at (default: http://127.0.0.1:<port>)" },
   { "--tenant",     "-t",  CorArgString, &tenantArg,    CorArgOpt, NULL,      NULL,  NULL,        "the tenant (default: the broker's default tenant)" },
   { "--token-env",  "-te", CorArgString, &tokenEnvArg,  CorArgOpt, NULL,      NULL,  NULL,        "the environment variable holding the bearer token sent to the broker" },
+  { "--stats-interval", "-si", CorArgInt, &statsInterval, CorArgOpt, _vp 10,  _vp 0, _vp 86400,   "seconds between two writes of a rule's statistics to its Rule entity (0: at once)" },
   CORARGS_END
 };
 

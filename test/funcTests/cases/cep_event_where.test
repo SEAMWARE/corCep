@@ -1,0 +1,68 @@
+#
+# FILE            cep_event_where.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# 'where': an NGSI-LD q on the event, applied by the BROKER - it is the q of the event's subscription, so an
+# update that does not match is never notified and costs corCep nothing.
+#
+# The rule toggles the light: a value that matched wrongly would toggle it twice. Its statistics count the fires.
+#
+--NAME--
+where: the event's q, in its subscription - only updates that match fire the rule
+
+--TAGS--
+cep where
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. A dimmer, the light, a rule on 'level>50', corCep started - the subscription's q"
+echo "===================================================================================="
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Dimmer:room-2-14", "type": "Dimmer", "level": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-bright", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:Dimmer:room-2-14", "attribute": "level", "where": "level>50"}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "toggle": "on"}]}}'
+cepStart --stats-interval 0
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+subsAwait 1
+curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/subscriptions/urn:ngsi-ld:Subscription:corcep-0" |
+  python3 -I -c 'import json, sys; s = json.load(sys.stdin); print("q:", s.get("q")); print("description:", s.get("description"))'
+echo
+echo
+
+
+echo "02. level 30, then 80 - only 80 fires: the light on, fired 1"
+echo "============================================================="
+ngsildStatus PATCH /entities/urn:ngsi-ld:Dimmer:room-2-14/attrs '{"level": {"type": "Property", "value": 30}}'
+ngsildStatus PATCH /entities/urn:ngsi-ld:Dimmer:room-2-14/attrs '{"level": {"type": "Property", "value": 80}}'
+attrAwait urn:ngsi-ld:Rule:room-2-14-bright fired 1
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A dimmer, the light, a rule on 'level>50', corCep started - the subscription's q
+====================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+1 rule, 1 subscription
+q: level>50
+description: corCep: urn:ngsi-ld:Dimmer:room-2-14 level where level>50
+
+
+02. level 30, then 80 - only 80 fires: the light on, fired 1
+=============================================================
+PATCH /entities/urn:ngsi-ld:Dimmer:room-2-14/attrs: 204
+PATCH /entities/urn:ngsi-ld:Dimmer:room-2-14/attrs: 204
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "on": true, "type": "Light"}
+
+

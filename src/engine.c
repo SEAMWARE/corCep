@@ -8,10 +8,14 @@
 // rules; an event notification fires the rules of its watch. Actions run here, in order - two actions on one
 // entity are never reordered.
 //
+// Each rule's statistics - fired (a count), firedAt, lastError - are written to its Rule entity, at most once
+// every statsInterval seconds (--stats-interval): on a tick of the engine's loop, once a second.
+//
 #include <pthread.h>                             // pthread_mutex_t, pthread_cond_t
 #include <stdio.h>                               // snprintf
 #include <stdlib.h>                              // malloc, free, atoi
 #include <string.h>                              // strcmp, memcpy
+#include <time.h>                                // clock_gettime, gmtime_r, strftime
 
 #include "corAlloc/corAllocBufferInit.h"         // corAllocBufferInit
 #include "corAlloc/corAllocBufferReset.h"        // corAllocBufferReset
@@ -43,6 +47,29 @@ static Item*            queueHead  = NULL;
 static Item*            queueTail  = NULL;
 
 static CepRules*        rules      = NULL;       // the generation running
+
+int statsInterval = 10;                          // --stats-interval
+
+
+
+// -----------------------------------------------------------------------------
+//
+// Stats - a rule's statistics, by its id: kept across generations (a reload does not reset them)
+//
+typedef struct Stats
+{
+  struct Stats*  next;
+  char*          id;                             // malloc'd
+  long long      fired;
+  char           firedAt[32];                    // "" - not fired since corCep started
+  char           lastError[384];                 // "" - none since corCep started
+  char           lastErrorAt[32];
+  bool           dirty;                          // changed since written
+  bool           seen;                           // in the generation running
+  time_t         writtenAt;
+} Stats;
+
+static Stats* statsList = NULL;
 
 
 
@@ -81,13 +108,24 @@ void engineQueue(const char* which, const char* body, int bodyLen)
 
 // -----------------------------------------------------------------------------
 //
-// dequeue - waits for the next item
+// dequeue - waits for the next item, at most a second: NULL - a tick
 //
 static Item* dequeue(void)
 {
+  struct timespec until;
+
+  clock_gettime(CLOCK_REALTIME, &until);
+  until.tv_sec += 1;
+
   pthread_mutex_lock(&queueMutex);
   while (queueHead == NULL)
-    pthread_cond_wait(&queueCond, &queueMutex);
+  {
+    if (pthread_cond_timedwait(&queueCond, &queueMutex, &until) != 0)
+    {
+      pthread_mutex_unlock(&queueMutex);
+      return NULL;
+    }
+  }
 
   Item* iP  = queueHead;
   queueHead = iP->next;
@@ -188,11 +226,121 @@ static bool actionToggle(CorAlloc* allocP, CepAction* aP, char* why, int whyLen)
 
 // -----------------------------------------------------------------------------
 //
+// nowIso - the time, UTC, ISO 8601 with milliseconds
+//
+static void nowIso(char* buf, int bufLen)
+{
+  struct timespec ts;
+  struct tm       tm;
+  char            s[24];
+
+  clock_gettime(CLOCK_REALTIME, &ts);
+  gmtime_r(&ts.tv_sec, &tm);
+  strftime(s, sizeof(s), "%Y-%m-%dT%H:%M:%S", &tm);
+  snprintf(buf, bufLen, "%s.%03ldZ", s, ts.tv_nsec / 1000000);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// statsOf - a rule's statistics; made at its first sight, the count going on from the Rule entity's 'fired'
+//
+static Stats* statsOf(CepRule* ruleP)
+{
+  for (Stats* sP = statsList; sP != NULL; sP = sP->next)
+  {
+    if (strcmp(sP->id, ruleP->id) == 0)
+      return sP;
+  }
+
+  Stats* sP = calloc(1, sizeof(Stats));
+  if (sP == NULL)
+    return NULL;
+
+  sP->id    = strdup(ruleP->id);
+  sP->fired = ruleP->firedBase;
+  sP->next  = statsList;
+  statsList = sP;
+
+  return sP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// statsWrite - POST /entities/<rule>/attrs: fired, firedAt, lastError (append: made the first time, replaced after)
+//
+static void statsWrite(CorAlloc* allocP, Stats* sP)
+{
+  CorNode* bodyP  = corTreeObject(allocP, NULL);
+  CorNode* firedP = corTreeObject(allocP, "fired");
+
+  corTreeChildAdd(firedP, corTreeString(allocP, "type", "Property"));
+  corTreeChildAdd(firedP, corTreeInteger(allocP, "value", sP->fired));
+  corTreeChildAdd(bodyP, firedP);
+
+  if (sP->firedAt[0] != 0)
+  {
+    CorNode* atP = corTreeObject(allocP, "firedAt");
+    CorNode* vP  = corTreeObject(allocP, "value");
+
+    corTreeChildAdd(vP, corTreeString(allocP, "@type", "DateTime"));
+    corTreeChildAdd(vP, corTreeString(allocP, "@value", sP->firedAt));
+    corTreeChildAdd(atP, corTreeString(allocP, "type", "Property"));
+    corTreeChildAdd(atP, vP);
+    corTreeChildAdd(bodyP, atP);
+  }
+
+  if (sP->lastError[0] != 0)
+  {
+    CorNode* errP = corTreeObject(allocP, "lastError");
+
+    corTreeChildAdd(errP, corTreeString(allocP, "type", "Property"));
+    corTreeChildAdd(errP, corTreeString(allocP, "value", sP->lastError));
+    corTreeChildAdd(errP, corTreeString(allocP, "observedAt", sP->lastErrorAt));
+    corTreeChildAdd(bodyP, errP);
+  }
+
+  char        path[1024];
+  CepResponse resp;
+
+  snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(allocP, sP->id));
+  if ((brokerRequest(allocP, CorVerbPost, path, NULL, bodyP, &resp) == false) || ((resp.status != 204) && (resp.status != 404)))
+    logLine("rule %s: its statistics not written - %s", sP->id, (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
+
+  sP->dirty     = false;
+  sP->writtenAt = time(NULL);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// statsFlush - the statistics changed and not written for statsInterval seconds
+//
+static void statsFlush(CorAlloc* allocP)
+{
+  time_t now = time(NULL);
+
+  for (Stats* sP = statsList; sP != NULL; sP = sP->next)
+  {
+    if ((sP->dirty == true) && (sP->seen == true) && (now - sP->writtenAt >= statsInterval))
+      statsWrite(allocP, sP);
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // ruleFire - its actions, in order; one failing does not stop the others
 //
 static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
 {
-  int failed = 0;
+  int    failed = 0;
+  Stats* sP     = statsOf(ruleP);
 
   for (int ix = 0; ix < ruleP->actions; ix++)
   {
@@ -204,7 +352,20 @@ static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
     {
       logLine("rule %s: action %d - %s", ruleP->id, ix + 1, why);
       ++failed;
+
+      if (sP != NULL)
+      {
+        snprintf(sP->lastError, sizeof(sP->lastError), "action %d: %s", ix + 1, why);
+        nowIso(sP->lastErrorAt, sizeof(sP->lastErrorAt));
+      }
     }
+  }
+
+  if (sP != NULL)
+  {
+    ++sP->fired;
+    nowIso(sP->firedAt, sizeof(sP->firedAt));
+    sP->dirty = true;
   }
 
   logLine("rule %s fired (%s)%s", ruleP->id, entity, (failed > 0) ? " - an action failed" : "");
@@ -252,8 +413,16 @@ static void eventHandle(CorAlloc* allocP, int sub, char* body)
 
     for (int ix = 0; ix < rules->rules; ix++)
     {
-      if (rules->ruleV[ix].event.watch == n)
-        ruleFire(allocP, &rules->ruleV[ix], idP->value.s);
+      CepRule* ruleP = &rules->ruleV[ix];
+
+      for (int ex = 0; ex < ruleP->events; ex++)
+      {
+        if (ruleP->eventV[ex].watch == n)
+        {
+          ruleFire(allocP, ruleP, idP->value.s);     // once per notified entity, however many of its events share the watch
+          break;
+        }
+      }
     }
   }
 }
@@ -273,6 +442,32 @@ static void rulesReload(void)
   subsApply(newP);
   rulesFree(rules);
   rules = newP;
+
+  //
+  // The statistics of the rules running; those of a rule gone (deleted, disabled, left out) are dropped
+  //
+  for (Stats* sP = statsList; sP != NULL; sP = sP->next)
+    sP->seen = false;
+  for (int ix = 0; ix < rules->rules; ix++)
+  {
+    Stats* sP = statsOf(&rules->ruleV[ix]);
+    if (sP != NULL)
+      sP->seen = true;
+  }
+
+  Stats** prevPP = &statsList;
+  while (*prevPP != NULL)
+  {
+    Stats* sP = *prevPP;
+    if (sP->seen == false)
+    {
+      *prevPP = sP->next;
+      free(sP->id);
+      free(sP);
+    }
+    else
+      prevPP = &sP->next;
+  }
 }
 
 
@@ -294,6 +489,13 @@ void engineRun(void)
   {
     Item* iP = dequeue();
 
+    if (iP == NULL)                              // a tick
+    {
+      statsFlush(&alloc);
+      corAllocBufferReset(&alloc, true);
+      continue;
+    }
+
     if (strcmp(iP->which, "rules") == 0)
       rulesReload();
     else
@@ -301,6 +503,7 @@ void engineRun(void)
 
     free(iP->body);
     free(iP);
+    statsFlush(&alloc);
     corAllocBufferReset(&alloc, true);
   }
 }
