@@ -1,0 +1,87 @@
+#
+# FILE            cep_target_group.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Three lights, two in room 2.14. 'room-on' sets 'on' on the room's lights (type Light, q roomId==...); 'all-toggle'
+# toggles every Light - each by its own value.
+#
+--NAME--
+A group target: type + q - every entity of the type that matches; set on the room's lights, toggle on every light
+
+--TAGS--
+cep target group
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, three lights (two in room 2.14), two rules on groups, corCep started"
+echo "==================================================================================="
+SW=urn:ngsi-ld:WallSwitch:room-2-14
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"upperPress\": {\"type\": \"Property\", \"value\": 0}, \"lowerPress\": {\"type\": \"Property\", \"value\": 0}}"
+for l in desk:room-2-14 ceiling:room-2-14 corridor:corridor-2; do
+  ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Light:${l%%:*}\", \"type\": \"Light\", \"on\": {\"type\": \"Property\", \"value\": false}, \"roomId\": {\"type\": \"Property\", \"value\": \"${l#*:}\"}}"
+done
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:room-on\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"upperPress\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"type\": \"Light\", \"q\": \"roomId==\\\"room-2-14\\\"\", \"set\": {\"on\": true}}]}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:all-toggle\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"lowerPress\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"type\": \"Light\", \"toggle\": \"on\"}]}}"
+cepStart
+subsAwait 2
+echo
+echo
+
+
+echo "02. upperPress - the two lights of room 2.14 on, the corridor's not"
+echo "==================================================================="
+press $SW upperPress
+firedAwait room-on 1
+for l in desk ceiling corridor; do entityKv urn:ngsi-ld:Light:$l; done
+echo
+echo
+
+
+echo "03. lowerPress - every light toggled: the room's off, the corridor's on"
+echo "======================================================================="
+press $SW lowerPress
+firedAwait all-toggle 1
+for l in desk ceiling corridor; do entityKv urn:ngsi-ld:Light:$l; done
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, three lights (two in room 2.14), two rules on groups, corCep started
+===================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. upperPress - the two lights of room 2.14 on, the corridor's not
+===================================================================
+room-on: 1
+{"id": "urn:ngsi-ld:Light:desk", "on": true, "roomId": "room-2-14", "type": "Light"}
+{"id": "urn:ngsi-ld:Light:ceiling", "on": true, "roomId": "room-2-14", "type": "Light"}
+{"id": "urn:ngsi-ld:Light:corridor", "on": false, "roomId": "corridor-2", "type": "Light"}
+
+
+03. lowerPress - every light toggled: the room's off, the corridor's on
+=======================================================================
+all-toggle: 1
+{"id": "urn:ngsi-ld:Light:desk", "on": false, "roomId": "room-2-14", "type": "Light"}
+{"id": "urn:ngsi-ld:Light:ceiling", "on": false, "roomId": "room-2-14", "type": "Light"}
+{"id": "urn:ngsi-ld:Light:corridor", "on": true, "roomId": "corridor-2", "type": "Light"}
+
+

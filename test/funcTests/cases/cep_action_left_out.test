@@ -1,0 +1,63 @@
+#
+# FILE            cep_action_left_out.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Each bad rule left out, the log says why.
+#
+--NAME--
+Actions and conditions that are not right - left out with the reason
+
+--TAGS--
+cep rules step if target
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. Eight bad rules - each left out, with why"
+echo "============================================="
+ev='{"event": "hold", "entity": "urn:ngsi-ld:Remote:r", "attribute": "hold"}, {"event": "release", "entity": "urn:ngsi-ld:Remote:r", "attribute": "release"}'
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": $2}, \"then\": {\"type\": \"JsonProperty\", \"json\": [$3]}}"; }
+rule a-two-targets      "{\"events\": [$ev], \"pattern\": \"hold\"}" '{"entity": "urn:ngsi-ld:Light:x", "type": "Light", "set": {"on": true}}'
+rule b-q-no-type        "{\"events\": [$ev], \"pattern\": \"hold\"}" '{"entity": "urn:ngsi-ld:Light:x", "q": "on==true", "set": {"on": true}}'
+rule c-until-no-step    "{\"events\": [$ev], \"pattern\": \"hold\"}" '{"entity": "urn:ngsi-ld:Light:x", "set": {"on": true}, "until": "release"}'
+rule d-until-pattern    "{\"events\": [$ev], \"pattern\": {\"any\": [\"hold\", \"release\"]}}" '{"entity": "urn:ngsi-ld:Light:x", "step": {"attribute": "level", "by": 1, "every": "PT1S"}, "until": "release"}'
+rule e-until-unknown    "{\"events\": [$ev], \"pattern\": \"hold\"}" '{"entity": "urn:ngsi-ld:Light:x", "step": {"attribute": "level", "by": 1, "every": "PT1S"}, "until": "letGo"}'
+rule f-step-by-0        "{\"events\": [$ev], \"pattern\": \"hold\"}" '{"entity": "urn:ngsi-ld:Light:x", "step": {"attribute": "level", "by": 0, "every": "PT1S"}}'
+rule g-step-too-fast    "{\"events\": [$ev], \"pattern\": \"hold\"}" '{"entity": "urn:ngsi-ld:Light:x", "step": {"attribute": "level", "by": 1, "every": "PT0.01S"}}'
+rule h-if-no-q          "{\"events\": [$ev], \"pattern\": \"hold\", \"if\": {\"entity\": \"urn:ngsi-ld:Building:hq\"}}" '{"entity": "urn:ngsi-ld:Light:x", "set": {"on": true}}'
+cepStart
+grep -o "rule urn:ngsi-ld:Rule:.* left out: .*" "$CEP_TEST_DIR/corCep.log" | sort
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. Eight bad rules - each left out, with why
+=============================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+rule urn:ngsi-ld:Rule:a-two-targets left out: an action names its target: 'entity', or 'type' (and 'q') - one of them
+rule urn:ngsi-ld:Rule:b-q-no-type left out: an action's 'q' - with 'type' only
+rule urn:ngsi-ld:Rule:c-until-no-step left out: 'until' - with 'step' only
+rule urn:ngsi-ld:Rule:d-until-pattern left out: 'until' names 'release', an event of the pattern - it would fire the rule too
+rule urn:ngsi-ld:Rule:e-until-unknown left out: 'until' names 'letGo' - no such event in 'events'
+rule urn:ngsi-ld:Rule:f-step-by-0 left out: 'step' needs 'attribute' and 'by' - a number, not 0
+rule urn:ngsi-ld:Rule:g-step-too-fast left out: 'step' needs 'every' - an ISO 8601 duration, PT0.05S or more
+rule urn:ngsi-ld:Rule:h-if-no-q left out: 'if' - { "entity" or "type", "q" }, or a list of them
+0 rules, 0 subscriptions
+
+

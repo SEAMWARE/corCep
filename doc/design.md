@@ -4,8 +4,8 @@ An NGSI-LD complex event processor: it watches entities in an NGSI-LD broker, re
 a sequence, an absence, a value over a window) and acts on entities. Written in C on the cor-libs. Works with any
 NGSI-LD broker; with coraine it can also run inside the broker.
 
-Status: P1, P2.1 and P2.2 built (README.md) - events, `where`, the patterns any / seq / all / repeat / absent,
-`supersedes`, set / toggle, statistics. Section 8 lists the decisions this note needs.
+Status: P1 and P2.1 to P2.3 built (README.md) - events, `where`, the patterns any / seq / all / repeat / absent,
+`supersedes`, `if`, set / toggle / step ... until on one entity or a group, statistics. Section 8 lists the decisions this note needs.
 
 ## 1. What it is for
 
@@ -90,8 +90,10 @@ An **event** is one notification of one watched attribute, the same value again 
 A rule with one event writes it as `when` itself (`{ "entity", "attribute", "where" }`); with several, `when` is
 `{ "events": [ <event>, ... ], "pattern": <pattern> }` (built in P2.1).
 
-A **condition on other entities** (the state of the site, not an event): `"if": "<entity>.<q expression>"`,
-read from corCep's copy of the watched entities when the pattern completes.
+A **condition on other entities** (the state of the site, not an event): `"if": { "entity" | "type", "q" }`, or
+a list of them (all must hold), asked of the broker when the pattern completes - `GET /entities?id=...&q=...&limit=1`,
+an entity found: it holds (built in P2.3). Asked, not watched: corCep keeps no copy of the site, the broker is the
+truth, and an `if` costs one request per fire, not a subscription per entity.
 
 A **pattern** combines events. The vocabulary is SQL:2016 row pattern recognition (`MATCH_RECOGNIZE`,
 ISO/IEC 9075-2:2016) - sequence, alternatives, quantifiers - in JSON:
@@ -119,13 +121,14 @@ A list, run in order:
 |---|---|
 | `{ "set": { "on": true }, "entity": "<id>" }` | PATCH the attributes |
 | `{ "toggle": "on", "entity": "<id>" }` | a boolean: read, the other value PATCHed |
-| `{ "step": { "attribute": "level", "by": 25, "min": 1, "max": 254, "every": "PT0.3S" }, "until": "release" }` | add `by` every `every` until the event `until`, min/max, or a time limit |
-| `"entity"` / `"type"` + `"q"` | the target: one entity, or every entity of a type matching q (`roomId=="<the event entity's room>"`: a group) |
+| `{ "step": { "attribute": "level", "by": 25, "min": 1, "max": 254, "every": "PT0.3S", "for": "PT30S" }, "until": "release" }` | add `by` every `every` until the event `until`, min/max (every target at one), or `for` (default PT30S) - built in P2.3 |
+| `"entity"` / `"type"` + `"q"` | the target: one entity, or every entity of a type matching q, found when the action runs (a group) - built in P2.3 |
 | `{ "create": { ...entity... } }` / `{ "delete": "<id>" }` | an alert entity, a log entry |
 | `{ "http": { "method": "POST", "url": "...", "body": ... } }` | a call out (a webhook) |
 | `{ "notify": "<url>" }` | an NGSI-LD notification of the match |
 
-Values in an action may name the match: `"${press.entity}"`, `"${temp.avg}"`.
+Values in an action may name the match: `"${press.entity}"`, `"${temp.avg}"`, `"${press.entity.roomId}"` (not built
+yet - a group target's q is a literal today).
 
 ## 4. Built from standards
 
@@ -155,8 +158,9 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
   superseded fire waiting) are found by a scan on each turn of the loop - the loop sleeps until the next one.
   A scan is enough for hundreds of rules; the timer wheel waits for a measurement that says otherwise.
 - **Windows** keep running aggregates (sum, count, min/max by a monotonic deque) - not every value.
-- **Entity state** for `if` and group targets: corCep keeps the watched attributes of the entities its rules name
-  (from the notifications), not a copy of the broker.
+- **Entity state** for `if` and group targets: none - both are asked of the broker when the rule fires (P2.3).
+  A `step` keeps the values it writes, read once from the targets when it starts; it runs on the loop's deadlines,
+  as the patterns' timers do.
 - **Actions** go out on an ordered queue per target entity: two actions on one light are never reordered.
 - **Threads**: one event loop (notifications, timers, the broker's answers); actions on the cor-libs' HTTP
   client, asynchronous.

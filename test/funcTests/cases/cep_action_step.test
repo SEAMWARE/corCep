@@ -1,0 +1,109 @@
+#
+# FILE            cep_action_step.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# A remote's 'hold' starts the step (by 20, every PT0.2S, max 100), its 'release' - an event of the rule, not of
+# its pattern - stops it. The level's own value is where the step starts.
+#
+--NAME--
+step until: a held button raises the level every 0.2 s; the release stops it; held on, it stops at max
+
+--TAGS--
+cep step
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. A remote, a light at level 10, a rule: hold steps the level until release, corCep started"
+echo "============================================================================================"
+RC=urn:ngsi-ld:Remote:room-2-14
+L=urn:ngsi-ld:Light:room-2-14-desk
+ngsildStatus POST /entities "{\"id\": \"$RC\", \"type\": \"Remote\", \"hold\": {\"type\": \"Property\", \"value\": 0}, \"release\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"$L\", \"type\": \"Light\", \"level\": {\"type\": \"Property\", \"value\": 10}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:dim-up\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {
+    \"events\": [{\"event\": \"hold\", \"entity\": \"$RC\", \"attribute\": \"hold\"}, {\"event\": \"release\", \"entity\": \"$RC\", \"attribute\": \"release\"}],
+    \"pattern\": \"hold\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"$L\", \"step\": {\"attribute\": \"level\", \"by\": 20, \"every\": \"PT0.2S\", \"max\": 100}, \"until\": \"release\"}]}}"
+cepStart
+subsAwait 2
+echo
+echo
+
+
+echo "02. Held - 30, 50; released - the level stays where it was"
+echo "=========================================================="
+press $RC hold
+attrAwait $L level 50 3
+press $RC release
+sleep 0.3
+at=$(entityKv $L)
+sleep 0.6
+[ "$(entityKv $L)" == "$at" ] && echo "stopped at the release: yes" || echo "stopped at the release: NO - $at, then $(entityKv $L)"
+echo "dim-up: $(firedCount dim-up)"
+echo
+echo
+
+
+echo "03. Held again, not released - up to 100, and it stops there"
+echo "============================================================"
+press $RC hold
+attrAwait $L level 100 3
+cepAwaitLog "step of level stopped"
+entityKv $L
+echo
+echo
+
+
+
+echo "04. A fan, a rule without 'until' and 'for' PT0.5S - by 1 every 0.1 s: it stops at its time limit, far from max"
+echo "================================================================================================================"
+F=urn:ngsi-ld:Fan:room-2-14
+ngsildStatus POST /entities "{\"id\": \"$F\", \"type\": \"Fan\", \"speed\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:fan-up\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$RC\", \"attribute\": \"hold\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"$F\", \"step\": {\"attribute\": \"speed\", \"by\": 1, \"every\": \"PT0.1S\", \"max\": 100, \"for\": \"PT0.5S\"}}]}}"
+cepAwaitLog "2 rules, 2 subscriptions"           # reloaded - the remote's hold is a subscription the two rules share
+press $RC hold
+cepAwaitLog "step of speed stopped" 3
+speed=$(entityKv $F | grep -o '"speed": [0-9]*' | grep -o '[0-9]*$')
+[ "$speed" -ge 4 ] && [ "$speed" -le 7 ] && echo "speed after 0.5 s: 4 to 7" || echo "speed after 0.5 s: $speed - not 4 to 7"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A remote, a light at level 10, a rule: hold steps the level until release, corCep started
+============================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. Held - 30, 50; released - the level stays where it was
+==========================================================
+stopped at the release: yes
+dim-up: 1
+
+
+03. Held again, not released - up to 100, and it stops there
+============================================================
+rule urn:ngsi-ld:Rule:dim-up: step of level stopped - at its bound
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "level": 100, "type": "Light"}
+
+
+04. A fan, a rule without 'until' and 'for' PT0.5S - by 1 every 0.1 s: it stops at its time limit, far from max
+================================================================================================================
+POST /entities: 201
+POST /entities: 201
+2 rules, 2 subscriptions
+rule urn:ngsi-ld:Rule:fan-up: step of speed stopped - its time limit
+speed after 0.5 s: 4 to 7
+
+

@@ -64,16 +64,32 @@ extern bool  nonexistentTenant(CepResponse* respP);
 typedef enum CepActionKind
 {
   CepActionSet,
-  CepActionToggle
+  CepActionToggle,
+  CepActionStep
 } CepActionKind;
 
 typedef struct CepAction
 {
   CepActionKind  kind;
-  char*          entity;                         // the target
-  CorNode*       set;                            // CepActionSet: { attribute: value, ... }
-  char*          attribute;                      // CepActionToggle: the boolean attribute
+  char*          entity;                         // the target: one entity ...
+  char*          type;                           // ... or every entity of a type
+  char*          q;                              //     that matches q (NULL: all of them)
+  CorNode*       set;                            // Set: { attribute: value, ... }
+  char*          attribute;                      // Toggle: the boolean attribute; Step: the number
+  double         by;                             // Step: added every 'every'
+  double         min, max;                       // Step: the bounds - stepping stops at one
+  bool           hasMin, hasMax;
+  long long      everyMs;                        // Step
+  long long      forMs;                          // Step: the time limit
+  int            until;                          // Step: the event that stops it, an index into the rule's untilV; -1: none
 } CepAction;
+
+typedef struct CepCondition                      // holds if the broker has an entity that matches
+{
+  char*  entity;                                 // one entity ...
+  char*  type;                                   // ... or any entity of a type
+  char*  q;                                      // the NGSI-LD q it must match
+} CepCondition;
 
 typedef struct CepEvent
 {
@@ -110,6 +126,12 @@ typedef struct CepRule
   int             supersedes;
   bool            partitioned;                   // every event a type selector: a match per entity (design § 3.1)
   char*           whenText;                      // 'when' as JSON text - a rule's state survives a reload if it is the same
+  CepEvent*       declV;                         // every event 'when' declares - 'until' names one the pattern does not use
+  int             decls;
+  CepEvent*       untilV;                        // the events that stop a step - watched, never fire the rule
+  int             untils;
+  CepCondition*   condV;                         // 'if': every one must hold when the pattern matches
+  int             conds;
   CepAction*      actionV;
   int             actions;
   long            firedBase;                     // 'fired' as the Rule entity holds it - where the count goes on from
