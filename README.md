@@ -8,8 +8,8 @@ through the NGSI-LD API, applied at once. The design, and what comes after this 
 It works with any NGSI-LD broker: the events come as notifications of NGSI-LD subscriptions, the actions go
 out as NGSI-LD requests.
 
-**Status: P2.1** - named events, `any` of them, `where` filters, `set` and `toggle` actions, rule statistics.
-Patterns over time (sequences, repetition, absence, windows) come next.
+**Status: P2.2** - named events; patterns `any`, `seq`, `all`, `repeat`, `absent`, `supersedes`; `where` filters;
+`set` and `toggle` actions; rule statistics. Windows, schedules, group targets, `step` and conditions come next.
 
 ## Build
 
@@ -84,10 +84,47 @@ A rule that is not right is left out (the log says why); the others run.
 | Member | |
 |---|---|
 | `events` | the events, each `{ "event": <name>, "entity" or "type", "attribute", "where" }` - names unique in the rule (default: the attribute) |
-| `pattern` | `"<name>"`: that event; `{ "any": [ <names> ] }`: any of them; absent: the one event of `events` |
+| `pattern` | `"<name>"`: that event; an object, below; absent: the one event of `events` |
+| `supersedes` | with `seq`, `all`, `repeat`: the ids of single-event rules this one supersedes - see below |
 
-The other patterns of [doc/design.md](doc/design.md) § 3.1 (`seq`, `all`, `repeat`, `absent`, `window`, schedules)
-are recognised and refused for now: the rule is left out, "pattern 'seq' is not supported yet".
+### Patterns
+
+| Pattern | Fires |
+|---|---|
+| `{ "any": [ "a", "b" ] }` | on each `a` and each `b` |
+| `{ "seq": [ "press", "press" ], "within": "PT0.5S" }` | when the steps come in this order, the last within 0.5 s of the first - a double press |
+| `{ "all": [ "door", "here" ], "within": "PT1M" }` | when each step has come, in any order, within 1 min |
+| `{ "repeat": "press", "min": 3, "within": "PT2S" }` | at the 3rd press within 2 s |
+| `{ "absent": "motion", "for": "PT10M" }` | when no `motion` has come for 10 min - once, until the next `motion`; the time counts from the start too |
+
+Durations are ISO 8601, as NGSI-LD's own: `PT0.5S`, `PT10M`, `PT1H`, `P1DT2H`. `window`, `at` and `cron`
+([doc/design.md](doc/design.md) § 3.1) are recognised and refused for now: "pattern 'window' is not supported yet".
+
+How a pattern matches - SQL:2016 row pattern recognition's defaults:
+
+- an event goes to the oldest open match that can take it; an event a match took starts no new one
+- a match done clears the other open matches: the events it used are not used again
+- a rule whose events are all type selectors (`"type": "WallSwitch"`, no `entity`) matches per entity - two
+  switches' presses are not a double press. A rule naming entities by id has one match state.
+- an event's time is when its notification reaches corCep
+- at most 32 open matches per rule and entity; beyond, the oldest is dropped and counted (`droppedMatches`)
+- a rule's open matches and timers survive a reload of the rules if its `when` is the same; a changed `when`
+  starts afresh
+
+### `supersedes`
+
+A double-press rule and a single-press rule on the same button would both fire on a double press. `supersedes`
+settles it:
+
+```json
+"when": { "type": "JsonProperty", "json": {
+  "events": [ { "event": "press", "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress" } ],
+  "pattern": { "seq": [ "press", "press" ], "within": "PT0.5S" },
+  "supersedes": [ "urn:ngsi-ld:Rule:room-2-14-upper" ] } }
+```
+
+Each fire of `room-2-14-upper` now waits 0.5 s: a second press in that time is a double press, and
+`room-2-14-upper` does not fire for either press. The cost: a single press acts 0.5 s late.
 
 ### `where`
 
@@ -104,6 +141,7 @@ corCep writes each rule's statistics to its Rule entity, with `POST /entities/<r
 | Attribute | |
 |---|---|
 | `fired` | the times the rule fired - the count goes on from the entity's own value after a restart |
+| `droppedMatches` | open matches dropped because a rule had 32 for one entity already - written once there is one |
 | `firedAt` | the last time it fired, a DateTime |
 | `lastError` | the last action that failed and why; `observedAt` is when |
 
@@ -153,6 +191,16 @@ new on every run. Against another NGSI-LD broker: `CEP_BROKER_HOST=... CEP_BROKE
 | `cep_when_left_out` | a `when` that is not right is left out, with the reason |
 | `cep_event_where` | `where` is the subscription's q: only matching updates fire |
 | `cep_rule_stats` | `fired`, `firedAt`, `lastError` on the Rule entity; no reload from them; the count survives a restart |
+| `cep_pattern_seq` | a double press within 1 s fires; 1.6 s apart does not, and the second press starts a new match |
+| `cep_pattern_supersedes` | a double press fires only the double-press rule; a single press fires the other 1 s late |
+| `cep_pattern_repeat` | the 3rd press within 2 s fires; the presses a match used are not used again |
+| `cep_pattern_absent` | no event for 1 s fires - from the start too; each event moves the deadline; once per absence |
+| `cep_pattern_all` | two events in either order within 2 s |
+| `cep_pattern_partition` | a pattern on a type matches per entity |
+| `cep_pattern_left_out` | patterns that are not right, each with the reason |
+
+The tests on patterns over time wait for events to be processed rather than sleep: a "sentinel" rule on the same
+event fires on every one, and corCep feeds every rule of an event, the patterns first, before the next event.
 
 CI (`.github/workflows/ci.yml`) builds corCep against the cor libs' main and runs the functional tests on every
 pull request.

@@ -195,3 +195,46 @@ subsAwait() {
   echo "subsAwait: $n event subscriptions, not $1, after ${secs}s" >&2
   return 1
 }
+
+
+# -----------------------------------------------------------------------------
+#
+# firedCount <rule> - the times corCep's log says the rule fired (the rule's id after urn:ngsi-ld:Rule:)
+#
+firedCount() {
+  grep -c "rule urn:ngsi-ld:Rule:$1 fired" "$CEP_TEST_DIR/corCep.log"
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# firedAwait <rule> <n> [seconds] - wait until the rule has fired <n> times; then print '<rule>: <n>'
+#
+# A 'sentinel' rule - a single-event rule on the same event as the rule under test - makes a negative check
+# exact: corCep feeds every rule of an event before the next event, the patterns first, so once the sentinel
+# has fired n times, the rule under test has seen those n events.
+#
+firedAwait() {
+  local secs="${3:-5}" i n
+
+  for ((i = 0; i < secs * 20; i++)); do
+    n=$(firedCount "$1")
+    [ "$n" -ge "$2" ] && { echo "$1: $n"; return 0; }
+    sleep 0.05
+  done
+
+  echo "firedAwait: $1 fired $n times, not $2, after ${secs}s" >&2
+  echo "$1: $n"
+  return 1
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# press <entityId> <attribute> - an update of the attribute (the value 1 each time - the same value is an event too)
+#
+press() {
+  curl -s -o /dev/null -X PATCH -H "NGSILD-Tenant: $(cepTenant)" -H "Content-Type: application/json" \
+       -d "{\"$2\": {\"type\": \"Property\", \"value\": 1}}" \
+       "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$1/attrs"
+}

@@ -1,0 +1,83 @@
+#
+# FILE            cep_pattern_partition.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# The rule watches every WallSwitch (a type selector): its matches are kept per switch. A sentinel counts the presses.
+#
+--NAME--
+A pattern on a type is per entity: presses of two switches are not one double press
+
+--TAGS--
+cep pattern seq partition
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. Two switches, the light, a double-press rule on every WallSwitch, a sentinel, corCep started"
+echo "==============================================================================================="
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:a", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:b", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:double", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {"events": [{"event": "press", "type": "WallSwitch", "attribute": "upperPress"}],
+                                            "pattern": {"seq": ["press", "press"], "within": "PT1S"}}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"mark": 1}}]}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:sentinel", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {"type": "WallSwitch", "attribute": "upperPress"}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"mark": 2}}]}}'
+cepStart
+subsAwait 1
+echo
+echo
+
+
+echo "02. Switch a, then switch b - no double press"
+echo "============================================="
+press urn:ngsi-ld:WallSwitch:a upperPress
+firedAwait sentinel 1
+press urn:ngsi-ld:WallSwitch:b upperPress
+firedAwait sentinel 2
+echo "double: $(firedCount double)"
+echo
+echo
+
+
+echo "03. Switch a again - a's double press, the entity: a"
+echo "===================================================="
+press urn:ngsi-ld:WallSwitch:a upperPress
+firedAwait double 1
+cepAwaitLog "double fired"
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. Two switches, the light, a double-press rule on every WallSwitch, a sentinel, corCep started
+===============================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. Switch a, then switch b - no double press
+=============================================
+sentinel: 1
+sentinel: 2
+double: 0
+
+
+03. Switch a again - a's double press, the entity: a
+====================================================
+double: 1
+rule urn:ngsi-ld:Rule:double fired (urn:ngsi-ld:WallSwitch:a)
+
+

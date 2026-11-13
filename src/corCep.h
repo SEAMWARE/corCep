@@ -85,15 +85,34 @@ typedef struct CepEvent
   int    watch;                                  // its index in the watch list - its subscription
 } CepEvent;
 
+typedef enum CepPatternKind
+{
+  CepPatternAny,                                 // one event, or any of several: each fires the rule
+  CepPatternSeq,                                 // the steps in order, all within 'within'
+  CepPatternAll,                                 // every step, in any order, all within 'within'
+  CepPatternRepeat,                              // one event 'min' times within 'within'
+  CepPatternAbsent                               // no event for 'for': a timer each event restarts
+} CepPatternKind;
+
 typedef struct CepRule
 {
-  char*       id;
-  char*       name;
-  CepEvent*   eventV;                            // the events the pattern uses: ANY of them fires the rule (P2.1)
-  int         events;
-  CepAction*  actionV;
-  int         actions;
-  long        firedBase;                         // 'fired' as the Rule entity holds it - where the count goes on from
+  char*           id;
+  char*           name;
+  CepEvent*       eventV;                        // the events the pattern uses, each once
+  int             events;
+  CepPatternKind  kind;
+  int*            stepV;                         // Seq, All: the steps, as indexes into eventV ([press, press]: 0, 0)
+  int             steps;
+  long long       withinMs;                      // Seq, All, Repeat
+  long long       forMs;                         // Absent
+  int             min;                           // Repeat
+  char**          supersedeV;                    // the rules this one supersedes (their ids)
+  int             supersedes;
+  bool            partitioned;                   // every event a type selector: a match per entity (design § 3.1)
+  char*           whenText;                      // 'when' as JSON text - a rule's state survives a reload if it is the same
+  CepAction*      actionV;
+  int             actions;
+  long            firedBase;                     // 'fired' as the Rule entity holds it - where the count goes on from
 } CepRule;
 
 typedef struct CepWatch                          // one subscription: (entity or type, attribute, q)
@@ -130,6 +149,17 @@ extern bool subsApply(CepRules* rulesP);                      // one per watch, 
 extern bool listenerStart(void);                              // the notification server, its own thread
 extern void engineRun(void);                                  // the events, one at a time - never returns
 extern void engineQueue(const char* which, const char* body, int bodyLen);   // from the listener thread
+
+//
+// The patterns' state (pattern.c) - the engine's thread only
+//
+typedef void (*CepFireFn)(CepRule* ruleP, const char* entity, void* ctx);
+
+extern long long nowMs(void);                                                  // CLOCK_MONOTONIC, ms
+extern void      patternsAdopt(CepRules* rulesP, long long now);              // a new generation: the state of unchanged rules kept
+extern void      patternsEvent(CepRules* rulesP, int watch, const char* entity, long long now, CepFireFn fire, void* ctx);
+extern long long patternsTimers(CepRules* rulesP, long long now, CepFireFn fire, void* ctx);   // the expired ones run; the next deadline, 0: none
+extern long long patternsDropped(const char* ruleId);                         // partial matches dropped (the bound), since start
 
 extern void logLine(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 

@@ -4,8 +4,8 @@ An NGSI-LD complex event processor: it watches entities in an NGSI-LD broker, re
 a sequence, an absence, a value over a window) and acts on entities. Written in C on the cor-libs. Works with any
 NGSI-LD broker; with coraine it can also run inside the broker.
 
-Status: P1 and P2.1 built (README.md) - one event or `any` of several, `where`, set / toggle, statistics. Section 8
-lists the decisions this note needs.
+Status: P1, P2.1 and P2.2 built (README.md) - events, `where`, the patterns any / seq / all / repeat / absent,
+`supersedes`, set / toggle, statistics. Section 8 lists the decisions this note needs.
 
 ## 1. What it is for
 
@@ -150,6 +150,10 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 - **Patterns** compile to a small NFA per rule; a partial match is an NFA instance with its start time. `within`,
   `for` and `absent` are timers (one timer wheel). Bounded: at most N partial matches per rule (oldest dropped,
   counted in the rule's statistics).
+  Built in P2.2 (src/pattern.c): seq / all keep open matches (at most 32 per rule and entity), repeat the times of
+  the last events, absent a deadline; `within` is checked when an event comes, and the deadlines (absent, a
+  superseded fire waiting) are found by a scan on each turn of the loop - the loop sleeps until the next one.
+  A scan is enough for hundreds of rules; the timer wheel waits for a measurement that says otherwise.
 - **Windows** keep running aggregates (sum, count, min/max by a monotonic deque) - not every value.
 - **Entity state** for `if` and group targets: corCep keeps the watched attributes of the entities its rules name
   (from the notifications), not a copy of the broker.

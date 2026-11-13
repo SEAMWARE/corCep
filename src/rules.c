@@ -8,13 +8,17 @@
 // A rule that is not right is logged and left out - the others run.
 //
 #include <stdio.h>                               // snprintf
-#include <stdlib.h>                              // calloc, free
+#include <stdlib.h>                              // calloc, free, strtod
 #include <string.h>                              // strcmp
 
 #include "corAlloc/corAlloc.h"                   // corAlloc
 #include "corAlloc/corAllocBufferInit.h"         // corAllocBufferInit
 #include "corAlloc/corAllocBufferReset.h"        // corAllocBufferReset
 #include "corAlloc/corAllocStrdup.h"             // corAllocStrdup
+#include "corJson/CorJson.h"                     // CorJson
+#include "corJson/corJsonCreate.h"               // corJsonCreate
+#include "corJson/corJsonRender.h"               // corJsonRender
+#include "corJson/corJsonRenderSize.h"           // corJsonRenderSize
 #include "corTree/corTreeBuilder.h"              // corTreeArray
 #include "corTree/corTreeLookup.h"               // corTreeLookup
 
@@ -130,13 +134,254 @@ static bool eventParse(CorAlloc* allocP, CorNode* evNodeP, CepEvent* evP, const 
 
 // -----------------------------------------------------------------------------
 //
+// durationParse - an ISO 8601 duration, as NGSI-LD's own: P[nD][T[nH][nM][n[.n]S]] -> milliseconds; false: not one,
+// or zero
+//
+static bool durationParse(const char* s, long long* msP)
+{
+  double ms     = 0;
+  bool   inTime = false;
+  bool   any    = false;
+
+  if ((s == NULL) || (*s != 'P'))
+    return false;
+
+  for (++s; *s != 0; )
+  {
+    if (*s == 'T')
+    {
+      if (inTime)
+        return false;
+      inTime = true;
+      ++s;
+      continue;
+    }
+
+    char*  end;
+    double n = strtod(s, &end);
+
+    if ((end == s) || (n < 0))
+      return false;
+
+    switch (*end)
+    {
+    case 'D': if (inTime)  return false; ms += n * 86400000.0; break;
+    case 'H': if (!inTime) return false; ms += n * 3600000.0;  break;
+    case 'M': if (!inTime) return false; ms += n * 60000.0;    break;
+    case 'S': if (!inTime) return false; ms += n * 1000.0;     break;
+    default:  return false;
+    }
+
+    any = true;
+    s   = end + 1;
+  }
+
+  if ((any == false) || (ms < 1))
+    return false;
+
+  *msP = (long long) (ms + 0.5);
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// eventUse - the event named <name> as one the pattern uses: its index in ruleP->eventV (added the first time), -1: no
+// such event declared
+//
+static int eventUse(CepRule* ruleP, CepEvent* declV, int decls, const char* name, char* why, int whyLen)
+{
+  for (int ix = 0; ix < ruleP->events; ix++)
+  {
+    if (strcmp(ruleP->eventV[ix].name, name) == 0)
+      return ix;
+  }
+
+  for (int ix = 0; ix < decls; ix++)
+  {
+    if (strcmp(declV[ix].name, name) == 0)
+    {
+      ruleP->eventV[ruleP->events] = declV[ix];
+      return ruleP->events++;
+    }
+  }
+
+  snprintf(why, whyLen, "the pattern names '%s' - no such event in 'events'", name);
+  return -1;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// patternOne - the pattern is one event
+//
+static bool patternOne(CorAlloc* allocP, CepRule* ruleP, CepEvent* declV, int decls, const char* name, char* why, int whyLen)
+{
+  ruleP->eventV = (CepEvent*) corAlloc(allocP, decls * sizeof(CepEvent));
+  ruleP->events = 0;
+  ruleP->kind   = CepPatternAny;
+
+  return eventUse(ruleP, declV, decls, name, why, whyLen) >= 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// patternParse - { "<kind>": ..., <its parameters> } - the vocabulary of doc/design.md § 3.1:
+//
+//   { "any":    [ <names> ] }                               any of them
+//   { "seq":    [ <names> ], "within": <duration> }         in this order (a name may repeat), all within
+//   { "all":    [ <names> ], "within": <duration> }         each of them, in any order, all within
+//   { "repeat": <name>, "min": <n>, "within": <duration> }  n times within
+//   { "absent": <name>, "for": <duration> }                 none for that long
+//
+// "window", "at" and "cron" are recognised and refused: not supported yet. "supersedes" (seq, all, repeat): the
+// ids of the rules this one supersedes - each of their fires waits 'within', and a match of this one cancels it.
+//
+static bool patternParse(CorAlloc* allocP, CorNode* patternP, CepRule* ruleP, CepEvent* declV, int decls, char* why, int whyLen)
+{
+  static const char* kinds[] = { "any", "seq", "all", "repeat", "absent", "window", "at", "cron", NULL };
+  CorNode*           kindP   = NULL;
+
+  for (CorNode* mP = patternP->value.head; (mP != NULL) && (kindP == NULL); mP = mP->next)
+  {
+    for (int ix = 0; kinds[ix] != NULL; ix++)
+    {
+      if (strcmp(mP->name, kinds[ix]) == 0)
+      {
+        kindP = mP;
+        break;
+      }
+    }
+  }
+
+  if (kindP == NULL)
+  {
+    snprintf(why, whyLen, "'pattern' names no kind (any, seq, all, repeat, absent)");
+    return false;
+  }
+
+  const char* kind = kindP->name;
+
+  if ((strcmp(kind, "window") == 0) || (strcmp(kind, "at") == 0) || (strcmp(kind, "cron") == 0))
+  {
+    snprintf(why, whyLen, "pattern '%s' is not supported yet", kind);
+    return false;
+  }
+
+  ruleP->eventV = (CepEvent*) corAlloc(allocP, decls * sizeof(CepEvent));
+  ruleP->events = 0;
+
+  //
+  // The names: a list (any, seq, all) or one (repeat, absent)
+  //
+  bool list = (strcmp(kind, "any") == 0) || (strcmp(kind, "seq") == 0) || (strcmp(kind, "all") == 0);
+
+  if (list)
+  {
+    if ((kindP->type != CorArray) || (kindP->value.head == NULL))
+    {
+      snprintf(why, whyLen, "'%s' - a list of event names", kind);
+      return false;
+    }
+
+    int n = count(kindP);
+    ruleP->stepV = (int*) corAlloc(allocP, n * sizeof(int));
+    ruleP->steps = 0;
+
+    for (CorNode* nP = kindP->value.head; nP != NULL; nP = nP->next)
+    {
+      if (nP->type != CorString)
+      {
+        snprintf(why, whyLen, "'%s' - a list of event names", kind);
+        return false;
+      }
+
+      int before = ruleP->events;
+      int ix     = eventUse(ruleP, declV, decls, nP->value.s, why, whyLen);
+
+      if (ix < 0)
+        return false;
+
+      if ((ix < before) && (strcmp(kind, "seq") != 0))     // only a sequence may name an event twice
+      {
+        snprintf(why, whyLen, "'%s' names '%s' twice", kind, nP->value.s);
+        return false;
+      }
+      ruleP->stepV[ruleP->steps++] = ix;
+    }
+  }
+  else
+  {
+    if (kindP->type != CorString)
+    {
+      snprintf(why, whyLen, "'%s' - an event name", kind);
+      return false;
+    }
+    if (eventUse(ruleP, declV, decls, kindP->value.s, why, whyLen) < 0)
+      return false;
+  }
+
+  //
+  // The parameters
+  //
+  CorNode* withinP = corTreeLookup(patternP, "within");
+  CorNode* forP    = corTreeLookup(patternP, "for");
+  CorNode* minP    = corTreeLookup(patternP, "min");
+
+  if (strcmp(kind, "any") == 0)
+    ruleP->kind = CepPatternAny;
+  else if (strcmp(kind, "absent") == 0)
+  {
+    ruleP->kind = CepPatternAbsent;
+    if ((forP == NULL) || (forP->type != CorString) || (durationParse(forP->value.s, &ruleP->forMs) == false))
+    {
+      snprintf(why, whyLen, "'absent' needs 'for' - an ISO 8601 duration (\"PT10M\")");
+      return false;
+    }
+  }
+  else
+  {
+    ruleP->kind = (strcmp(kind, "seq") == 0) ? CepPatternSeq : (strcmp(kind, "all") == 0) ? CepPatternAll : CepPatternRepeat;
+
+    if ((withinP == NULL) || (withinP->type != CorString) || (durationParse(withinP->value.s, &ruleP->withinMs) == false))
+    {
+      snprintf(why, whyLen, "'%s' needs 'within' - an ISO 8601 duration (\"PT0.5S\")", kind);
+      return false;
+    }
+
+    if (ruleP->kind == CepPatternRepeat)
+    {
+      if ((minP == NULL) || (minP->type != CorInt) || (minP->value.i < 2) || (minP->value.i > 1000))
+      {
+        snprintf(why, whyLen, "'repeat' needs 'min' - a number, 2 to 1000");
+        return false;
+      }
+      ruleP->min = (int) minP->value.i;
+    }
+    else if (ruleP->steps < 2)
+    {
+      snprintf(why, whyLen, "'%s' - two steps or more", kind);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // whenParse - `when`, in one of two forms:
 //
 //   { "entity" | "type", "attribute", "where" }                one event - the short form
 //   { "events": [ <event>, ... ], "pattern": <pattern> }       named events, combined by the pattern
 //
-// The patterns of P2.1: "<event>" (that one), { "any": [ "<event>", ... ] } (any of them); no pattern with
-// one event: that event. The others of doc/design.md § 3.1 are recognised and refused: not supported yet.
+// The pattern: "<event>" (that one), or an object (patternParse); no pattern with one event: that event.
 //
 static bool whenParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* why, int whyLen)
 {
@@ -195,11 +440,8 @@ static bool whenParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* wh
   }
 
   //
-  // The pattern: which of them fire the rule
+  // The pattern
   //
-  CorNode* namesP = NULL;
-  char*    one    = NULL;
-
   if (patternP == NULL)
   {
     if (decls != 1)
@@ -207,72 +449,19 @@ static bool whenParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* wh
       snprintf(why, whyLen, "'when': %d events need a 'pattern' - { \"any\": [ ... ] }", decls);
       return false;
     }
-    one = declV[0].name;
+    return patternOne(allocP, ruleP, declV, decls, declV[0].name, why, whyLen);
   }
-  else if (patternP->type == CorString)
-    one = patternP->value.s;
-  else if (patternP->type == CorObject)
-  {
-    CorNode* kindP = patternP->value.head;
 
-    if ((kindP == NULL) || (strcmp(kindP->name, "any") != 0))
-    {
-      snprintf(why, whyLen, "pattern '%s' is not supported yet", (kindP != NULL) ? kindP->name : "{}");
-      return false;
-    }
-    if ((kindP->type != CorArray) || (kindP->value.head == NULL))
-    {
-      snprintf(why, whyLen, "'any' - a list of event names");
-      return false;
-    }
-    namesP = kindP;
-  }
-  else
+  if (patternP->type == CorString)
+    return patternOne(allocP, ruleP, declV, decls, patternP->value.s, why, whyLen);
+
+  if (patternP->type != CorObject)
   {
     snprintf(why, whyLen, "'pattern' - an event name or an object");
     return false;
   }
 
-  ruleP->eventV = (CepEvent*) corAlloc(allocP, decls * sizeof(CepEvent));
-  ruleP->events = 0;
-
-  for (CorNode* nP = (namesP != NULL) ? namesP->value.head : NULL; (nP != NULL) || (one != NULL); nP = (nP != NULL) ? nP->next : NULL)
-  {
-    const char* name = (one != NULL) ? one : ((nP->type == CorString) ? nP->value.s : NULL);
-    int         ix;
-
-    if (name == NULL)
-    {
-      snprintf(why, whyLen, "'any' - a list of event names");
-      return false;
-    }
-
-    for (ix = 0; ix < decls; ix++)
-    {
-      if (strcmp(declV[ix].name, name) == 0)
-        break;
-    }
-    if (ix == decls)
-    {
-      snprintf(why, whyLen, "the pattern names '%s' - no such event in 'events'", name);
-      return false;
-    }
-
-    for (int jx = 0; jx < ruleP->events; jx++)
-    {
-      if (strcmp(ruleP->eventV[jx].name, name) == 0)
-      {
-        snprintf(why, whyLen, "'any' names '%s' twice", name);
-        return false;
-      }
-    }
-    ruleP->eventV[ruleP->events++] = declV[ix];
-
-    if (one != NULL)
-      break;
-  }
-
-  return true;
+  return patternParse(allocP, patternP, ruleP, declV, decls, why, whyLen);
 }
 
 
@@ -377,6 +566,59 @@ static int watchOf(CepRules* rP, CepEvent* evP)
 
 // -----------------------------------------------------------------------------
 //
+// whenExtras - what follows from `when` beside the pattern: 'supersedes', the partitioning, the text
+//
+static bool whenExtras(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* why, int whyLen)
+{
+  CorNode* supP = corTreeLookup(whenP, "supersedes");
+
+  if (supP != NULL)
+  {
+    if ((ruleP->kind != CepPatternSeq) && (ruleP->kind != CepPatternAll) && (ruleP->kind != CepPatternRepeat))
+    {
+      snprintf(why, whyLen, "'supersedes' - with a 'seq', 'all' or 'repeat' pattern only (it waits their 'within')");
+      return false;
+    }
+    if ((supP->type != CorArray) || (supP->value.head == NULL))
+    {
+      snprintf(why, whyLen, "'supersedes' - a list of Rule ids");
+      return false;
+    }
+
+    ruleP->supersedeV = (char**) corAlloc(allocP, count(supP) * sizeof(char*));
+    for (CorNode* nP = supP->value.head; nP != NULL; nP = nP->next)
+    {
+      if (nP->type != CorString)
+      {
+        snprintf(why, whyLen, "'supersedes' - a list of Rule ids");
+        return false;
+      }
+      ruleP->supersedeV[ruleP->supersedes++] = corAllocStrdup(allocP, nP->value.s);
+    }
+  }
+
+  //
+  // Every event a type selector (no entity id): a match per entity - two switches' presses are not one double press
+  //
+  ruleP->partitioned = true;
+  for (int ix = 0; ix < ruleP->events; ix++)
+  {
+    if (ruleP->eventV[ix].entity != NULL)
+      ruleP->partitioned = false;
+  }
+
+  CorJson json;
+  corJsonCreate(&json, allocP);
+  ruleP->whenText = corAlloc(allocP, corJsonRenderSize(&json, whenP) + 1);
+  corJsonRender(&json, whenP, ruleP->whenText);
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // rulesLoad - every Rule entity (enabled ones), NULL: the broker did not answer
 //
 CepRules* rulesLoad(void)
@@ -435,6 +677,9 @@ CepRules* rulesLoad(void)
     ruleP->name = corAllocStrdup(&rP->alloc, (str(eP, "name") != NULL) ? str(eP, "name") : id);
 
     if (whenParse(&rP->alloc, json(eP, "when"), ruleP, why, sizeof(why)) == false)
+      goto bad;
+
+    if (whenExtras(&rP->alloc, json(eP, "when"), ruleP, why, sizeof(why)) == false)
       goto bad;
 
     CorNode* firedP = corTreeLookup(eP, "fired");

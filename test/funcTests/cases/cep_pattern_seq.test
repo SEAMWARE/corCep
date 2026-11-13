@@ -1,0 +1,96 @@
+#
+# FILE            cep_pattern_seq.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# A sentinel rule on the same event fires on every press: once it has fired n times, the seq has seen n presses.
+#
+--NAME--
+seq within: two presses within 1 s fire the rule; two presses 1.6 s apart do not, and the second starts a new match
+
+--TAGS--
+cep pattern seq
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, a double-press rule (seq, within PT1S), a sentinel, corCep started"
+echo "============================================================================================"
+SW=urn:ngsi-ld:WallSwitch:room-2-14
+LIGHT=urn:ngsi-ld:Light:room-2-14-desk
+up="{\"event\": \"press\", \"entity\": \"$SW\", \"attribute\": \"upperPress\"}"
+then="{\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"$LIGHT\", \"set\": {\"mark\": 1}}]}"
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": $2}, \"then\": $then}"; }
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"upperPress\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"$LIGHT\", \"type\": \"Light\", \"mark\": {\"type\": \"Property\", \"value\": 0}}"
+rule double "{\"events\": [$up], \"pattern\": {\"seq\": [\"press\", \"press\"], \"within\": \"PT1S\"}}"
+rule sentinel "{\"events\": [$up]}"
+cepStart
+subsAwait 1
+echo
+echo
+
+
+echo "02. Two presses at once - the double press fires"
+echo "================================================"
+press $SW upperPress
+press $SW upperPress
+firedAwait sentinel 2
+firedAwait double 1
+echo
+echo
+
+
+echo "03. Two presses 1.6 s apart - no double press"
+echo "============================================="
+press $SW upperPress
+sleep 1.6
+press $SW upperPress
+firedAwait sentinel 4
+firedAwait double 1
+echo
+echo
+
+
+echo "04. One more press, at once - with the 4th press, a double press"
+echo "================================================================"
+press $SW upperPress
+firedAwait sentinel 5
+firedAwait double 2
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, a double-press rule (seq, within PT1S), a sentinel, corCep started
+============================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. Two presses at once - the double press fires
+================================================
+sentinel: 2
+double: 1
+
+
+03. Two presses 1.6 s apart - no double press
+=============================================
+sentinel: 4
+double: 1
+
+
+04. One more press, at once - with the 4th press, a double press
+================================================================
+sentinel: 5
+double: 2
+
+
