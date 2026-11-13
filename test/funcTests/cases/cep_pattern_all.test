@@ -1,0 +1,79 @@
+#
+# FILE            cep_pattern_all.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Two entities, one event each; the pattern takes them in any order.
+#
+--NAME--
+all within: a door opened and presence, in either order within 2 s, fire the rule
+
+--TAGS--
+cep pattern all
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. A door, a presence sensor, the light, a rule on both within 2 s, corCep started"
+echo "=================================================================================="
+LIGHT=urn:ngsi-ld:Light:room-2-14-desk
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Door:room-2-14", "type": "Door", "opened": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:PresenceSensor:room-2-14", "type": "PresenceSensor", "presence": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities "{\"id\": \"$LIGHT\", \"type\": \"Light\", \"mark\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:arrived", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {
+    "events": [{"event": "door", "entity": "urn:ngsi-ld:Door:room-2-14", "attribute": "opened"},
+               {"event": "here", "entity": "urn:ngsi-ld:PresenceSensor:room-2-14", "attribute": "presence"}],
+    "pattern": {"all": ["door", "here"], "within": "PT2S"}}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"mark": 1}}]}}'
+cepStart
+subsAwait 2
+echo
+echo
+
+
+echo "02. The door, then presence - fires"
+echo "==================================="
+press urn:ngsi-ld:Door:room-2-14 opened
+sleep 0.2
+press urn:ngsi-ld:PresenceSensor:room-2-14 presence
+firedAwait arrived 1
+echo
+echo
+
+
+echo "03. Presence, then the door - fires again"
+echo "========================================="
+press urn:ngsi-ld:PresenceSensor:room-2-14 presence
+sleep 0.2
+press urn:ngsi-ld:Door:room-2-14 opened
+firedAwait arrived 2
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A door, a presence sensor, the light, a rule on both within 2 s, corCep started
+==================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. The door, then presence - fires
+===================================
+arrived: 1
+
+
+03. Presence, then the door - fires again
+=========================================
+arrived: 2
+
+

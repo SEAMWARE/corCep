@@ -1,0 +1,95 @@
+#
+# FILE            cep_pattern_repeat.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# A sentinel on the same event counts the presses the repeat has seen.
+#
+--NAME--
+repeat min 3 within 2 s: two presses do not fire, the third does; the count starts again after a match
+
+--TAGS--
+cep pattern repeat
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, a rule on three presses within 2 s, a sentinel, corCep started"
+echo "========================================================================================"
+SW=urn:ngsi-ld:WallSwitch:room-2-14
+LIGHT=urn:ngsi-ld:Light:room-2-14-desk
+up="{\"event\": \"press\", \"entity\": \"$SW\", \"attribute\": \"upperPress\"}"
+then="{\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"$LIGHT\", \"set\": {\"mark\": 1}}]}"
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": $2}, \"then\": $then}"; }
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"upperPress\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"$LIGHT\", \"type\": \"Light\", \"mark\": {\"type\": \"Property\", \"value\": 0}}"
+rule triple "{\"events\": [$up], \"pattern\": {\"repeat\": \"press\", \"min\": 3, \"within\": \"PT2S\"}}"
+rule sentinel "{\"events\": [$up]}"
+cepStart
+subsAwait 1
+echo
+echo
+
+
+echo "02. Two presses - no match"
+echo "=========================="
+press $SW upperPress
+press $SW upperPress
+firedAwait sentinel 2
+echo "triple: $(firedCount triple)"
+echo
+echo
+
+
+echo "03. The third - a match"
+echo "======================="
+press $SW upperPress
+firedAwait sentinel 3
+firedAwait triple 1
+echo
+echo
+
+
+echo "04. Two more - no match: the three before were used"
+echo "===================================================="
+press $SW upperPress
+press $SW upperPress
+firedAwait sentinel 5
+echo "triple: $(firedCount triple)"
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, a rule on three presses within 2 s, a sentinel, corCep started
+========================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. Two presses - no match
+==========================
+sentinel: 2
+triple: 0
+
+
+03. The third - a match
+=======================
+sentinel: 3
+triple: 1
+
+
+04. Two more - no match: the three before were used
+====================================================
+sentinel: 5
+triple: 1
+
+

@@ -1,0 +1,72 @@
+#
+# FILE            cep_pattern_left_out.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Each bad rule left out, the log says why; the good one beside them runs.
+#
+--NAME--
+Patterns over time that are not right - left out with the reason
+
+--TAGS--
+cep pattern rules
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. Eight bad rules and a good one - each bad one left out, with why"
+echo "===================================================================="
+SW=urn:ngsi-ld:WallSwitch:room-2-14
+LIGHT=urn:ngsi-ld:Light:room-2-14-desk
+up="{\"event\": \"press\", \"entity\": \"$SW\", \"attribute\": \"upperPress\"}"
+then="{\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"$LIGHT\", \"set\": {\"mark\": 1}}]}"
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": $2}, \"then\": $then}"; }
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"upperPress\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"$LIGHT\", \"type\": \"Light\", \"mark\": {\"type\": \"Property\", \"value\": 0}}"
+rule a-seq-one-step     "{\"events\": [$up], \"pattern\": {\"seq\": [\"press\"], \"within\": \"PT1S\"}}"
+rule b-seq-no-within    "{\"events\": [$up], \"pattern\": {\"seq\": [\"press\", \"press\"]}}"
+rule c-bad-duration     "{\"events\": [$up], \"pattern\": {\"seq\": [\"press\", \"press\"], \"within\": \"5s\"}}"
+rule d-zero-duration    "{\"events\": [$up], \"pattern\": {\"seq\": [\"press\", \"press\"], \"within\": \"PT0S\"}}"
+rule e-repeat-min-1     "{\"events\": [$up], \"pattern\": {\"repeat\": \"press\", \"min\": 1, \"within\": \"PT1S\"}}"
+rule f-absent-no-for    "{\"events\": [$up], \"pattern\": {\"absent\": \"press\"}}"
+rule g-supersedes-any   "{\"events\": [$up], \"pattern\": {\"any\": [\"press\"]}, \"supersedes\": [\"urn:ngsi-ld:Rule:x\"]}"
+rule h-no-kind          "{\"events\": [$up], \"pattern\": {\"within\": \"PT1S\"}}"
+rule i-good             "{\"events\": [$up], \"pattern\": {\"seq\": [\"press\", \"press\"], \"within\": \"P0DT0.5S\"}}"
+cepStart
+grep -o "rule urn:ngsi-ld:Rule:.* left out: .*" "$CEP_TEST_DIR/corCep.log" | sort
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. Eight bad rules and a good one - each bad one left out, with why
+====================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+rule urn:ngsi-ld:Rule:a-seq-one-step left out: 'seq' - two steps or more
+rule urn:ngsi-ld:Rule:b-seq-no-within left out: 'seq' needs 'within' - an ISO 8601 duration ("PT0.5S")
+rule urn:ngsi-ld:Rule:c-bad-duration left out: 'seq' needs 'within' - an ISO 8601 duration ("PT0.5S")
+rule urn:ngsi-ld:Rule:d-zero-duration left out: 'seq' needs 'within' - an ISO 8601 duration ("PT0.5S")
+rule urn:ngsi-ld:Rule:e-repeat-min-1 left out: 'repeat' needs 'min' - a number, 2 to 1000
+rule urn:ngsi-ld:Rule:f-absent-no-for left out: 'absent' needs 'for' - an ISO 8601 duration ("PT10M")
+rule urn:ngsi-ld:Rule:g-supersedes-any left out: 'supersedes' - with a 'seq', 'all' or 'repeat' pattern only (it waits their 'within')
+rule urn:ngsi-ld:Rule:h-no-kind left out: 'pattern' names no kind (any, seq, all, repeat, absent)
+1 rule, 1 subscription
+
+

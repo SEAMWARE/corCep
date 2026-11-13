@@ -108,14 +108,20 @@ void engineQueue(const char* which, const char* body, int bodyLen)
 
 // -----------------------------------------------------------------------------
 //
-// dequeue - waits for the next item, at most a second: NULL - a tick
+// dequeue - waits for the next item, at most <ms> milliseconds: NULL - a tick
 //
-static Item* dequeue(void)
+static Item* dequeue(long long ms)
 {
   struct timespec until;
 
   clock_gettime(CLOCK_REALTIME, &until);
-  until.tv_sec += 1;
+  until.tv_sec  += ms / 1000;
+  until.tv_nsec += (ms % 1000) * 1000000;
+  if (until.tv_nsec >= 1000000000)
+  {
+    until.tv_sec  += 1;
+    until.tv_nsec -= 1000000000;
+  }
 
   pthread_mutex_lock(&queueMutex);
   while (queueHead == NULL)
@@ -293,6 +299,16 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
     corTreeChildAdd(bodyP, atP);
   }
 
+  long long dropped = patternsDropped(sP->id);
+  if (dropped > 0)
+  {
+    CorNode* dP = corTreeObject(allocP, "droppedMatches");
+
+    corTreeChildAdd(dP, corTreeString(allocP, "type", "Property"));
+    corTreeChildAdd(dP, corTreeInteger(allocP, "value", dropped));
+    corTreeChildAdd(bodyP, dP);
+  }
+
   if (sP->lastError[0] != 0)
   {
     CorNode* errP = corTreeObject(allocP, "lastError");
@@ -375,6 +391,17 @@ static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
 
 // -----------------------------------------------------------------------------
 //
+// fireCb - the patterns' way to fire a rule
+//
+static void fireCb(CepRule* ruleP, const char* entity, void* ctx)
+{
+  ruleFire((CorAlloc*) ctx, ruleP, (entity != NULL) ? entity : "-");
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // eventHandle - a notification of subscription <sub>: for each entity in it holding the attribute, the rules of the watch
 //
 static void eventHandle(CorAlloc* allocP, int sub, char* body)
@@ -411,19 +438,7 @@ static void eventHandle(CorAlloc* allocP, int sub, char* body)
     if ((idP == NULL) || (idP->type != CorString) || (corTreeLookup(eP, wP->attribute) == NULL))
       continue;
 
-    for (int ix = 0; ix < rules->rules; ix++)
-    {
-      CepRule* ruleP = &rules->ruleV[ix];
-
-      for (int ex = 0; ex < ruleP->events; ex++)
-      {
-        if (ruleP->eventV[ex].watch == n)
-        {
-          ruleFire(allocP, ruleP, idP->value.s);     // once per notified entity, however many of its events share the watch
-          break;
-        }
-      }
-    }
+    patternsEvent(rules, n, idP->value.s, nowMs(), fireCb, allocP);
   }
 }
 
@@ -442,6 +457,7 @@ static void rulesReload(void)
   subsApply(newP);
   rulesFree(rules);
   rules = newP;
+  patternsAdopt(rules, nowMs());
 
   //
   // The statistics of the rules running; those of a rule gone (deleted, disabled, left out) are dropped
@@ -487,14 +503,20 @@ void engineRun(void)
 
   while (true)
   {
-    Item* iP = dequeue();
+    //
+    // The deadlines passed (absences, superseded fires waiting) fire; the wait: till the next one, a second at most
+    //
+    long long now  = nowMs();
+    long long next = patternsTimers(rules, now, fireCb, &alloc);
+    long long wait = ((next != 0) && (next - now < 1000)) ? next - now : 1000;
 
-    if (iP == NULL)                              // a tick
-    {
-      statsFlush(&alloc);
-      corAllocBufferReset(&alloc, true);
+    statsFlush(&alloc);
+    corAllocBufferReset(&alloc, true);
+
+    Item* iP = dequeue((wait > 0) ? wait : 1);
+
+    if (iP == NULL)                              // a tick, or a deadline
       continue;
-    }
 
     if (strcmp(iP->which, "rules") == 0)
       rulesReload();
