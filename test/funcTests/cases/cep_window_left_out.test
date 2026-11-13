@@ -1,0 +1,60 @@
+#
+# FILE            cep_window_left_out.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Each bad window left out, the log says why.
+#
+--NAME--
+Windows that are not right - left out with the reason
+
+--TAGS--
+cep pattern window rules
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. Eight bad windows - each left out, with why"
+echo "==============================================="
+ev='{"event": "temp", "entity": "urn:ngsi-ld:TemperatureSensor:a", "attribute": "temperature"}'
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": {\"events\": [$ev], \"pattern\": $2 $3}}, \"then\": {\"type\": \"JsonProperty\", \"json\": []}}"; }
+rule a-no-for          '{"window": "temp", "avg": {"gt": 25}}'
+rule b-two-aggregates  '{"window": "temp", "for": "PT1M", "avg": {"gt": 25}, "max": {"gt": 30}}'
+rule c-no-aggregate    '{"window": "temp", "for": "PT1M"}'
+rule d-agg-not-object  '{"window": "temp", "for": "PT1M", "avg": 25}'
+rule e-agg-empty       '{"window": "temp", "for": "PT1M", "avg": {}}'
+rule f-bound-unknown   '{"window": "temp", "for": "PT1M", "avg": {"above": 25}}'
+rule g-bound-string    '{"window": "temp", "for": "PT1M", "avg": {"gt": "25"}}'
+rule h-supersedes      '{"window": "temp", "for": "PT1M", "avg": {"gt": 25}}' ', "supersedes": ["urn:ngsi-ld:Rule:x"]'
+cepStart
+grep -o "rule urn:ngsi-ld:Rule:.* left out: .*" "$CEP_TEST_DIR/corCep.log" | sort
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. Eight bad windows - each left out, with why
+===============================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+rule urn:ngsi-ld:Rule:a-no-for left out: 'window' needs 'for' - an ISO 8601 duration ("PT1H")
+rule urn:ngsi-ld:Rule:b-two-aggregates left out: 'window': one aggregate - 'avg' and 'max'
+rule urn:ngsi-ld:Rule:c-no-aggregate left out: 'window' needs an aggregate - avg, min, max, sum or count
+rule urn:ngsi-ld:Rule:d-agg-not-object left out: 'avg' - { "gt" | "ge" | "lt" | "le": <number>, ... }
+rule urn:ngsi-ld:Rule:e-agg-empty left out: 'avg' - { "gt" | "ge" | "lt" | "le": <number>, ... }
+rule urn:ngsi-ld:Rule:f-bound-unknown left out: 'avg' - { "gt" | "ge" | "lt" | "le": <number>, ... }
+rule urn:ngsi-ld:Rule:g-bound-string left out: 'avg' - { "gt" | "ge" | "lt" | "le": <number>, ... }
+rule urn:ngsi-ld:Rule:h-supersedes left out: 'supersedes' - with a 'seq', 'all' or 'repeat' pattern only (it waits their 'within')
+
+

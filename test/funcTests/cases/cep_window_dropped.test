@@ -1,0 +1,68 @@
+#
+# FILE            cep_window_dropped.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# A window holds at most 10000 values per partition: the 10001st drops the oldest, and the Rule entity says so -
+# droppedValues, written without the rule firing (--stats-interval 0: at once).
+#
+--NAME--
+A window's bound: 10000 values; the 10001st drops the oldest - droppedValues on the Rule entity
+
+--TAGS--
+cep pattern window stats
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. A sensor, a rule 'many' (count of the last hour at least 20000 - more than a window holds), corCep started"
+echo "============================================================================================================"
+S=urn:ngsi-ld:TemperatureSensor:a
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:mark", "type": "Light", "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities "{\"id\": \"$S\", \"type\": \"TemperatureSensor\", \"temperature\": {\"type\": \"Property\", \"value\": 21}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:many\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"events\": [{\"event\": \"temp\", \"entity\": \"$S\", \"attribute\": \"temperature\"}],
+                                                   \"pattern\": {\"window\": \"temp\", \"for\": \"PT1H\", \"count\": {\"ge\": 20000}}}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"urn:ngsi-ld:Light:mark\", \"set\": {\"mark\": 1}}]}}"
+cepStart --stats-interval 0
+subsAwait 1
+echo
+echo
+
+
+echo "02. 10001 values - one curl, one connection; droppedValues 1, 'many' not fired"
+echo "==============================================================================="
+cfg="$CEP_TEST_DIR/curl.cfg"
+tenant=$(cepTenant)
+for ((i = 0; i < 10001; i++)); do
+  ((i == 0)) || echo next
+  printf 'url = "http://%s:%s/ngsi-ld/v1/entities/%s/attrs"\nrequest = "PATCH"\nheader = "NGSILD-Tenant: %s"\nheader = "Content-Type: application/json"\ndata = "{\\"temperature\\": {\\"type\\": \\"Property\\", \\"value\\": %d}}"\noutput = "/dev/null"\n' \
+         "$CEP_BROKER_HOST" "$CEP_BROKER_PORT" "$S" "$tenant" "$i"
+done > "$cfg"
+curl -s -K "$cfg"
+attrAwait urn:ngsi-ld:Rule:many droppedValues 1 60
+entityKv urn:ngsi-ld:Rule:many | python3 -I -c 'import json, sys; e = json.load(sys.stdin); print({k: e.get(k) for k in ("droppedValues", "fired")})'
+echo "many: $(firedCount many)"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A sensor, a rule 'many' (count of the last hour at least 20000 - more than a window holds), corCep started
+============================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. 10001 values - one curl, one connection; droppedValues 1, 'many' not fired
+===============================================================================
+{'droppedValues': 1, 'fired': 0}
+many: 0
+
+

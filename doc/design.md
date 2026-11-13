@@ -4,8 +4,8 @@ An NGSI-LD complex event processor: it watches entities in an NGSI-LD broker, re
 a sequence, an absence, a value over a window) and acts on entities. Written in C on the cor-libs. Works with any
 NGSI-LD broker; with coraine it can also run inside the broker.
 
-Status: P1 and P2.1 to P2.3 built (README.md) - events, `where`, the patterns any / seq / all / repeat / absent,
-`supersedes`, `if`, set / toggle / step ... until on one entity or a group, statistics. Section 8 lists the decisions this note needs.
+Status: P1 and P2.1 to P2.4 built (README.md) - events, `where`, the patterns any / seq / all / repeat / absent /
+window, `supersedes`, `if`, set / toggle / step ... until on one entity or a group, statistics. Section 8 lists the decisions this note needs.
 
 ## 1. What it is for
 
@@ -158,6 +158,10 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
   superseded fire waiting) are found by a scan on each turn of the loop - the loop sleeps until the next one.
   A scan is enough for hundreds of rules; the timer wheel waits for a measurement that says otherwise.
 - **Windows** keep running aggregates (sum, count, min/max by a monotonic deque) - not every value.
+  Built in P2.4: a ring of (time, value) for sum / avg / count, the deque for min / max, at most 10000 values per
+  window and partition (the oldest dropped, counted: `droppedValues`). Fires on the EDGE - when the bounds start to
+  hold - looked at on each value and when the oldest value leaves (a deadline, as absent's). The time window
+  slides; tumbling windows ("the mean of each hour") are not built.
 - **Entity state** for `if` and group targets: none - both are asked of the broker when the rule fires (P2.3).
   A `step` keeps the values it writes, read once from the targets when it starts; it runs on the loop's deadlines,
   as the patterns' timers do.

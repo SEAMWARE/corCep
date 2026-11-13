@@ -8,9 +8,9 @@ through the NGSI-LD API, applied at once. The design, and what comes after this 
 It works with any NGSI-LD broker: the events come as notifications of NGSI-LD subscriptions, the actions go
 out as NGSI-LD requests.
 
-**Status: P2.3** - named events; patterns `any`, `seq`, `all`, `repeat`, `absent`, `supersedes`; `where` filters;
-`if` conditions on other entities; `set`, `toggle` and `step` (... `until`) actions, on one entity or a group;
-rule statistics. Windows and schedules come next.
+**Status: P2.4** - named events; patterns `any`, `seq`, `all`, `repeat`, `absent`, `window`, `supersedes`; `where`
+filters; `if` conditions on other entities; `set`, `toggle` and `step` (... `until`) actions, on one entity or a
+group; rule statistics. Schedules (`at`, `cron`) come next.
 
 ## Build
 
@@ -101,9 +101,10 @@ A rule that is not right is left out (the log says why); the others run.
 | `{ "all": [ "door", "here" ], "within": "PT1M" }` | when each step has come, in any order, within 1 min |
 | `{ "repeat": "press", "min": 3, "within": "PT2S" }` | at the 3rd press within 2 s |
 | `{ "absent": "motion", "for": "PT10M" }` | when no `motion` has come for 10 min - once, until the next `motion`; the time counts from the start too |
+| `{ "window": "temp", "for": "PT1H", "avg": { "gt": 26 } }` | when the mean of the last hour's values STARTS to be above 26 - see below |
 
-Durations are ISO 8601, as NGSI-LD's own: `PT0.5S`, `PT10M`, `PT1H`, `P1DT2H`. `window`, `at` and `cron`
-([doc/design.md](doc/design.md) § 3.1) are recognised and refused for now: "pattern 'window' is not supported yet".
+Durations are ISO 8601, as NGSI-LD's own: `PT0.5S`, `PT10M`, `PT1H`, `P1DT2H`. `at` and `cron`
+([doc/design.md](doc/design.md) § 3.1) are recognised and refused for now: "pattern 'cron' is not supported yet".
 
 How a pattern matches - SQL:2016 row pattern recognition's defaults:
 
@@ -115,6 +116,31 @@ How a pattern matches - SQL:2016 row pattern recognition's defaults:
 - at most 32 open matches per rule and entity; beyond, the oldest is dropped and counted (`droppedMatches`)
 - a rule's open matches and timers survive a reload of the rules if its `when` is the same; a changed `when`
   starts afresh
+
+### `window`
+
+A window is the values of one event over the last `for` - the notified attribute's values, numbers:
+
+```json
+{ "window": "temp", "for": "PT1H", "avg": { "gt": 26 } }
+```
+
+| Member | |
+|---|---|
+| `window` | the event - its attribute's values are the window's |
+| `for` | an ISO 8601 duration: how far back the window goes |
+| `avg`, `min`, `max`, `sum`, `count` | the aggregate - one of them, with its bounds |
+| `gt`, `ge`, `lt`, `le` | the bounds: `>`, `>=`, `<`, `<=` a number - one or more, all must hold (`{ "gt": 20, "lt": 30 }`: between) |
+
+- The rule fires when the bounds START to hold - once; again only after they have stopped holding. A mean above
+  26 for an hour is one fire, not one per value.
+- The window is looked at on each value AND when a value leaves it: the bounds can start to hold with no event at
+  all - `{ "max": { "lt": 30 } }` fires when the last value of 30 or more leaves the window.
+- An empty window: `avg`, `min`, `max` and `sum` do not hold; `count` is 0.
+- A value that is not a number is not in the window; the log says so.
+- At most 10000 values per window (per entity, for a type selector); beyond, the oldest is dropped and counted
+  (`droppedValues`) - the window is then shorter than `for`.
+- `sum`, `avg` and `count` keep the values; `min` and `max` only those that can still be the min or max.
 
 ### `supersedes`
 
@@ -211,11 +237,13 @@ corCep writes each rule's statistics to its Rule entity, with `POST /entities/<r
 |---|---|
 | `fired` | the times the rule fired - the count goes on from the entity's own value after a restart |
 | `droppedMatches` | open matches dropped because a rule had 32 for one entity already - written once there is one |
+| `droppedValues` | window values dropped because a window held 10000 already - written once there is one |
 | `firedAt` | the last time it fired, a DateTime |
 | `lastError` | the last action that failed and why; `observedAt` is when |
 
 A rule's statistics are written at most once every `--stats-interval` seconds (default 10): a rule firing often costs
-the broker one write per interval, not one per fire. `--stats-interval 0` writes after every fire:
+the broker one write per interval, not one per fire. A drop is written too, the rule fired or not.
+`--stats-interval 0` writes after every change:
 
 ```
 corCep --broker http://localhost:1026 --stats-interval 0
@@ -271,6 +299,10 @@ new on every run. Against another NGSI-LD broker: `CEP_BROKER_HOST=... CEP_BROKE
 | `cep_action_step` | `step` while held; `until` (the release) stops it; held on, it stops at `max`; `for` stops it |
 | `cep_rule_if` | `if` not holding: not fired, logged; holding: fired |
 | `cep_action_left_out` | actions and conditions that are not right, each with the reason |
+| `cep_pattern_window` | `avg` and `max`: fired when the bounds start to hold, once; again after the window empties; a value not a number |
+| `cep_pattern_window_expire` | a value leaving the window fires a rule with no event; `count` per entity for a type |
+| `cep_window_dropped` | 10001 values: the oldest dropped, `droppedValues` written without a fire |
+| `cep_window_left_out` | windows that are not right, each with the reason |
 
 The tests on patterns over time wait for events to be processed rather than sleep: a "sentinel" rule on the same
 event fires on every one, and corCep feeds every rule of an event, the patterns first, before the next event.

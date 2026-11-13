@@ -107,8 +107,26 @@ typedef enum CepPatternKind
   CepPatternSeq,                                 // the steps in order, all within 'within'
   CepPatternAll,                                 // every step, in any order, all within 'within'
   CepPatternRepeat,                              // one event 'min' times within 'within'
-  CepPatternAbsent                               // no event for 'for': a timer each event restarts
+  CepPatternAbsent,                              // no event for 'for': a timer each event restarts
+  CepPatternWindow                               // an aggregate of the values of the last 'for' - fires when its bounds start to hold
 } CepPatternKind;
+
+typedef enum CepWindowAgg
+{
+  CepAggAvg,
+  CepAggMin,
+  CepAggMax,
+  CepAggSum,
+  CepAggCount
+} CepWindowAgg;
+
+typedef enum CepBound                            // a window's bounds: indexes of CepRule::boundV, bits of CepRule::bounds
+{
+  CepBoundGt,
+  CepBoundGe,
+  CepBoundLt,
+  CepBoundLe
+} CepBound;
 
 typedef struct CepRule
 {
@@ -120,7 +138,10 @@ typedef struct CepRule
   int*            stepV;                         // Seq, All: the steps, as indexes into eventV ([press, press]: 0, 0)
   int             steps;
   long long       withinMs;                      // Seq, All, Repeat
-  long long       forMs;                         // Absent
+  long long       forMs;                         // Absent, Window
+  CepWindowAgg    aggregate;                     // Window
+  double          boundV[4];                     // Window: by CepBound
+  unsigned        bounds;                        // Window: the bounds given, a bit each (1 << CepBound)
   int             min;                           // Repeat
   char**          supersedeV;                    // the rules this one supersedes (their ids)
   int             supersedes;
@@ -179,9 +200,10 @@ typedef void (*CepFireFn)(CepRule* ruleP, const char* entity, void* ctx);
 
 extern long long nowMs(void);                                                  // CLOCK_MONOTONIC, ms
 extern void      patternsAdopt(CepRules* rulesP, long long now);              // a new generation: the state of unchanged rules kept
-extern void      patternsEvent(CepRules* rulesP, int watch, const char* entity, long long now, CepFireFn fire, void* ctx);
+extern void      patternsEvent(CepRules* rulesP, int watch, const char* entity, const double* valueP, long long now, CepFireFn fire, void* ctx);
 extern long long patternsTimers(CepRules* rulesP, long long now, CepFireFn fire, void* ctx);   // the expired ones run; the next deadline, 0: none
 extern long long patternsDropped(const char* ruleId);                         // partial matches dropped (the bound), since start
+extern long long patternsDroppedValues(const char* ruleId);                   // window values dropped (the bound), since start
 
 extern void logLine(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 

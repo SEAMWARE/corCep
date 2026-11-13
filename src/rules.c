@@ -245,6 +245,78 @@ static bool patternOne(CorAlloc* allocP, CepRule* ruleP, CepEvent* declV, int de
 
 // -----------------------------------------------------------------------------
 //
+// windowParse - the parameters of a window: 'for', and ONE aggregate with its bounds
+//
+static bool windowParse(CorNode* patternP, CepRule* ruleP, char* why, int whyLen)
+{
+  static const char* aggs[]   = { "avg", "min", "max", "sum", "count", NULL };
+  static const char* bounds[] = { "gt", "ge", "lt", "le", NULL };
+  CorNode*           forP     = corTreeLookup(patternP, "for");
+  CorNode*           aggP     = NULL;
+
+  ruleP->kind = CepPatternWindow;
+
+  if ((forP == NULL) || (forP->type != CorString) || (durationParse(forP->value.s, &ruleP->forMs) == false))
+  {
+    snprintf(why, whyLen, "'window' needs 'for' - an ISO 8601 duration (\"PT1H\")");
+    return false;
+  }
+
+  for (int ix = 0; aggs[ix] != NULL; ix++)
+  {
+    CorNode* nP = corTreeLookup(patternP, aggs[ix]);
+
+    if (nP == NULL)
+      continue;
+    if (aggP != NULL)
+    {
+      snprintf(why, whyLen, "'window': one aggregate - '%s' and '%s'", aggP->name, nP->name);
+      return false;
+    }
+    aggP             = nP;
+    ruleP->aggregate = (CepWindowAgg) ix;
+  }
+
+  if (aggP == NULL)
+  {
+    snprintf(why, whyLen, "'window' needs an aggregate - avg, min, max, sum or count");
+    return false;
+  }
+
+  if ((aggP->type != CorObject) || (aggP->value.head == NULL))
+  {
+    snprintf(why, whyLen, "'%s' - { \"gt\" | \"ge\" | \"lt\" | \"le\": <number>, ... }", aggP->name);
+    return false;
+  }
+
+  ruleP->bounds = 0;
+  for (CorNode* bP = aggP->value.head; bP != NULL; bP = bP->next)
+  {
+    int b = -1;
+
+    for (int ix = 0; bounds[ix] != NULL; ix++)
+    {
+      if (strcmp(bP->name, bounds[ix]) == 0)
+        b = ix;
+    }
+
+    if ((b == -1) || ((bP->type != CorInt) && (bP->type != CorFloat)))
+    {
+      snprintf(why, whyLen, "'%s' - { \"gt\" | \"ge\" | \"lt\" | \"le\": <number>, ... }", aggP->name);
+      return false;
+    }
+
+    ruleP->boundV[b] = (bP->type == CorInt) ? (double) bP->value.i : bP->value.f;
+    ruleP->bounds   |= 1u << b;
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // patternParse - { "<kind>": ..., <its parameters> } - the vocabulary of doc/design.md § 3.1:
 //
 //   { "any":    [ <names> ] }                               any of them
@@ -252,8 +324,11 @@ static bool patternOne(CorAlloc* allocP, CepRule* ruleP, CepEvent* declV, int de
 //   { "all":    [ <names> ], "within": <duration> }         each of them, in any order, all within
 //   { "repeat": <name>, "min": <n>, "within": <duration> }  n times within
 //   { "absent": <name>, "for": <duration> }                 none for that long
+//   { "window": <name>, "for": <duration>, "<aggregate>": { "<bound>": <number>, ... } }
+//                                                           an aggregate of the last 'for' of values: avg, min, max,
+//                                                           sum or count - one; bounds gt, ge, lt, le - all must hold
 //
-// "window", "at" and "cron" are recognised and refused: not supported yet. "supersedes" (seq, all, repeat): the
+// "at" and "cron" are recognised and refused: not supported yet. "supersedes" (seq, all, repeat): the
 // ids of the rules this one supersedes - each of their fires waits 'within', and a match of this one cancels it.
 //
 static bool patternParse(CorAlloc* allocP, CorNode* patternP, CepRule* ruleP, CepEvent* declV, int decls, char* why, int whyLen)
@@ -275,13 +350,13 @@ static bool patternParse(CorAlloc* allocP, CorNode* patternP, CepRule* ruleP, Ce
 
   if (kindP == NULL)
   {
-    snprintf(why, whyLen, "'pattern' names no kind (any, seq, all, repeat, absent)");
+    snprintf(why, whyLen, "'pattern' names no kind (any, seq, all, repeat, absent, window)");
     return false;
   }
 
   const char* kind = kindP->name;
 
-  if ((strcmp(kind, "window") == 0) || (strcmp(kind, "at") == 0) || (strcmp(kind, "cron") == 0))
+  if ((strcmp(kind, "at") == 0) || (strcmp(kind, "cron") == 0))
   {
     snprintf(why, whyLen, "pattern '%s' is not supported yet", kind);
     return false;
@@ -349,6 +424,8 @@ static bool patternParse(CorAlloc* allocP, CorNode* patternP, CepRule* ruleP, Ce
 
   if (strcmp(kind, "any") == 0)
     ruleP->kind = CepPatternAny;
+  else if (strcmp(kind, "window") == 0)
+    return windowParse(patternP, ruleP, why, whyLen);
   else if (strcmp(kind, "absent") == 0)
   {
     ruleP->kind = CepPatternAbsent;

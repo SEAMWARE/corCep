@@ -11,6 +11,10 @@
 //   all     the same, the steps in any order
 //   repeat  the times of the last events within 'within'; done at 'min' of them
 //   absent  a deadline, moved on by each event; done when it passes - once, until the next event
+//   window  the values of the last 'for' (numbers - the notified attribute's): sum, avg, count from a ring of
+//           them, min and max from a monotonic deque (only the values that can still be the min / max). Done when
+//           its bounds START to hold - on an event, or when a value leaves the window; again only after they have
+//           stopped holding. An empty window: avg, min, max, sum do not hold, count is 0.
 //
 // Semantics, as SQL:2016 row pattern recognition's defaults:
 //   - an event goes to the OLDEST partial match that can take it; one that took it starts no new match
@@ -36,6 +40,33 @@
 
 
 #define PARTIALS_MAX  32                         // open matches per partition - the oldest dropped beyond, and counted
+#define WINDOW_MAX    10000                      // values per window and partition - the oldest dropped beyond, and counted
+
+
+
+// -----------------------------------------------------------------------------
+//
+// Sample - a value in a window, and when it came
+//
+typedef struct Sample
+{
+  long long  at;
+  double     v;
+} Sample;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// Ring - a window's values, oldest first: a circular buffer, grown to WINDOW_MAX
+//
+typedef struct Ring
+{
+  Sample*  v;
+  int      cap;
+  int      start;
+  int      len;
+} Ring;
 
 
 
@@ -68,6 +99,10 @@ typedef struct Part
   char*         absentEntity;
   long long     pendingAt;                       // a superseded rule - its fire waiting, 0: none
   char*         pendingEntity;
+  Ring          ring;                            // window - the values (min, max: the deque)
+  double        sum;                             // window - sum, avg: the values' sum
+  bool          holding;                         // window - its bounds held at the last look
+  char*         windowEntity;                    // window - the entity of the last value
 } Part;
 
 
@@ -83,6 +118,7 @@ typedef struct State
   char*          whenText;
   Part*          parts;
   long long      dropped;                        // partial matches dropped, since corCep started
+  long long      droppedValues;                  // window values dropped, since corCep started
   bool           seen;
 } State;
 
@@ -120,6 +156,8 @@ static void partsFree(State* sP)
     free(pP->timeV);
     free(pP->absentEntity);
     free(pP->pendingEntity);
+    free(pP->ring.v);
+    free(pP->windowEntity);
     free(pP);
   }
 }
@@ -397,6 +435,176 @@ static bool feedRepeat(CepRule* ruleP, Part* pP, long long now)
 
 // -----------------------------------------------------------------------------
 //
+// ringAt - the ix:th value, 0: the oldest
+//
+static Sample* ringAt(Ring* rP, int ix)
+{
+  return &rP->v[(rP->start + ix) % rP->cap];
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// ringPush - a value at the end; false: no room (WINDOW_MAX, or no memory) - the caller makes room
+//
+static bool ringPush(Ring* rP, long long at, double v)
+{
+  if (rP->len == rP->cap)
+  {
+    int cap = (rP->cap == 0) ? 16 : rP->cap * 2;
+
+    if (cap > WINDOW_MAX)
+      cap = WINDOW_MAX;
+    if (cap == rP->cap)
+      return false;
+
+    Sample* nV = malloc(cap * sizeof(Sample));
+    if (nV == NULL)
+      return false;
+
+    for (int ix = 0; ix < rP->len; ix++)
+      nV[ix] = *ringAt(rP, ix);
+
+    free(rP->v);
+    rP->v     = nV;
+    rP->cap   = cap;
+    rP->start = 0;
+  }
+
+  Sample* sP = &rP->v[(rP->start + rP->len) % rP->cap];
+  sP->at = at;
+  sP->v  = v;
+  ++rP->len;
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// ringPopFront, ringPopBack -
+//
+static void ringPopFront(Ring* rP)
+{
+  rP->start = (rP->start + 1) % rP->cap;
+  --rP->len;
+}
+
+static void ringPopBack(Ring* rP)
+{
+  --rP->len;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// windowExpire - the values of a window older than 'for' leave it
+//
+static void windowExpire(CepRule* ruleP, Part* pP, long long now)
+{
+  Ring* rP = &pP->ring;
+
+  while ((rP->len > 0) && (ringAt(rP, 0)->at <= now - ruleP->forMs))
+  {
+    pP->sum -= ringAt(rP, 0)->v;
+    ringPopFront(rP);
+  }
+
+  if (rP->len == 0)
+    pP->sum = 0;                                 // no drift carried over from values long gone
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// windowFeed - a value into a window
+//
+// min / max: the values that can no longer be the min (max) - an older one not below (above) the new one - are
+// not kept; the deque's front is the min (max).
+//
+static void windowFeed(State* sP, CepRule* ruleP, Part* pP, double v, long long now)
+{
+  Ring* rP = &pP->ring;
+
+  windowExpire(ruleP, pP, now);
+
+  if (ruleP->aggregate == CepAggMin)
+  {
+    while ((rP->len > 0) && (ringAt(rP, rP->len - 1)->v >= v))
+      ringPopBack(rP);
+  }
+  else if (ruleP->aggregate == CepAggMax)
+  {
+    while ((rP->len > 0) && (ringAt(rP, rP->len - 1)->v <= v))
+      ringPopBack(rP);
+  }
+
+  if (ringPush(rP, now, v) == false)
+  {
+    if (rP->len == 0)
+      return;                                    // no memory at all
+
+    pP->sum -= ringAt(rP, 0)->v;
+    ringPopFront(rP);
+    ++sP->droppedValues;
+    ringPush(rP, now, v);
+  }
+  pP->sum += v;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// windowHolds - the aggregate of a window, within all of its bounds
+//
+static bool windowHolds(CepRule* ruleP, Part* pP)
+{
+  Ring*  rP = &pP->ring;
+  double a;
+
+  if (ruleP->aggregate == CepAggCount)
+    a = rP->len;
+  else if (rP->len == 0)
+    return false;
+  else if (ruleP->aggregate == CepAggSum)
+    a = pP->sum;
+  else if (ruleP->aggregate == CepAggAvg)
+    a = pP->sum / rP->len;
+  else
+    a = ringAt(rP, 0)->v;                        // min, max: the deque's front
+
+  if ((ruleP->bounds & (1u << CepBoundGt)) && !(a >  ruleP->boundV[CepBoundGt])) return false;
+  if ((ruleP->bounds & (1u << CepBoundGe)) && !(a >= ruleP->boundV[CepBoundGe])) return false;
+  if ((ruleP->bounds & (1u << CepBoundLt)) && !(a <  ruleP->boundV[CepBoundLt])) return false;
+  if ((ruleP->bounds & (1u << CepBoundLe)) && !(a <= ruleP->boundV[CepBoundLe])) return false;
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// windowCheck - true: the bounds START to hold now (they did not at the last look)
+//
+static bool windowCheck(CepRule* ruleP, Part* pP)
+{
+  bool holds = windowHolds(ruleP, pP);
+  bool start = holds && (pP->holding == false);
+
+  pP->holding = holds;
+  return start;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // ruleIndex - a rule's index in the generation, by id; -1: not in it
 //
 static int ruleIndex(CepRules* rulesP, const char* id)
@@ -441,7 +649,7 @@ static long long supersededWithin(CepRules* rulesP, int ix)
 // the rules done fire. The patterns first, so that a match done can cancel what it supersedes before the
 // single-event rules are looked at.
 //
-void patternsEvent(CepRules* rulesP, int watch, const char* entity, long long now, CepFireFn fire, void* ctx)
+void patternsEvent(CepRules* rulesP, int watch, const char* entity, const double* valueP, long long now, CepFireFn fire, void* ctx)
 {
   bool* doneV = calloc((rulesP->rules > 0) ? rulesP->rules : 1, sizeof(bool));
 
@@ -485,6 +693,16 @@ void patternsEvent(CepRules* rulesP, int watch, const char* entity, long long no
     case CepPatternAbsent:
       pP->absentAt = now + ruleP->forMs;
       setStr(&pP->absentEntity, entity);
+      break;
+    case CepPatternWindow:
+      if (valueP == NULL)
+      {
+        logLine("rule %s: %s's '%s' is not a number - not in the window", ruleP->id, entity, ruleP->eventV[ev].attribute);
+        break;
+      }
+      windowFeed(sP, ruleP, pP, *valueP, now);
+      setStr(&pP->windowEntity, entity);
+      done = windowCheck(ruleP, pP);
       break;
     default:
       break;
@@ -592,6 +810,18 @@ long long patternsTimers(CepRules* rulesP, long long now, CepFireFn fire, void* 
 
     for (Part* pP = sP->parts; pP != NULL; pP = pP->next)
     {
+      if (ruleP->kind == CepPatternWindow)        // a value leaving the window may change what holds
+      {
+        windowExpire(ruleP, pP, now);
+        if (windowCheck(ruleP, pP))
+          fire(ruleP, pP->windowEntity, ctx);
+
+        long long leaves = (pP->ring.len > 0) ? ringAt(&pP->ring, 0)->at + ruleP->forMs : 0;
+        if ((leaves != 0) && ((next == 0) || (leaves < next)))
+          next = leaves;
+        continue;
+      }
+
       if ((pP->absentAt != 0) && (pP->absentAt <= now))
       {
         pP->absentAt = 0;                        // once - the next event starts the next absence
@@ -625,6 +855,22 @@ long long patternsDropped(const char* ruleId)
   {
     if (strcmp(sP->id, ruleId) == 0)
       return sP->dropped;
+  }
+  return 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// patternsDroppedValues - a rule's window values dropped since corCep started (WINDOW_MAX per partition)
+//
+long long patternsDroppedValues(const char* ruleId)
+{
+  for (State* sP = stateList; sP != NULL; sP = sP->next)
+  {
+    if (strcmp(sP->id, ruleId) == 0)
+      return sP->droppedValues;
   }
   return 0;
 }
