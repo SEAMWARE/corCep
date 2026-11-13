@@ -90,7 +90,7 @@ static bool eventParse(CorAlloc* allocP, CorNode* whenP, CepEvent* evP, char* wh
   }
 
   //
-  // An EntitySelector needs a type: an id alone gives its own - urn:ngsi-ld:<type>:... (as corhome-rules does)
+  // An EntitySelector needs a type: an id alone gives its own - urn:ngsi-ld:<type>:...
   //
   if ((type == NULL) && (strncmp(entity, "urn:ngsi-ld:", 12) == 0))
   {

@@ -107,7 +107,7 @@ try:
     waitFor("its subscription made", lambda: "urn:ngsi-ld:Subscription:corcep-0" in ourSubs(), True)
 
     call("PATCH", f"/entities/{REMOTE}/attrs", {"upperPress": prop(1)})
-    waitFor("set: the lamp on", lambda: attr(LIGHT, "on"), True)
+    waitFor("set: the light on", lambda: attr(LIGHT, "on"), True)
     check("set: the level too", attr(LIGHT, "level"), 200)
 
     # toggle - and the SAME value again is an event too (a button pressed twice)

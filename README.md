@@ -1,7 +1,7 @@
 # corCep - an NGSI-LD complex event processor
 
-corCep watches entities in an NGSI-LD context broker and acts on them: when a remote's button is pressed, a
-lamp goes on. Its rules are NGSI-LD entities of type `Rule` in the same broker - made, changed and deleted
+corCep watches entities in an NGSI-LD context broker and acts on them: when a wall switch is pressed, a
+light goes on. Its rules are NGSI-LD entities of type `Rule` in the same broker - made, changed and deleted
 through the NGSI-LD API, applied at once. The design, and what comes after this first version:
 [doc/design.md](doc/design.md).
 
@@ -46,11 +46,11 @@ that failed.
 
 ```json
 {
-  "id": "urn:ngsi-ld:Rule:playroom-upper",
+  "id": "urn:ngsi-ld:Rule:room-2-14-upper",
   "type": "Rule",
-  "name": { "type": "Property", "value": "playroom: upper button - lamp on" },
-  "when": { "type": "JsonProperty", "json": { "entity": "urn:ngsi-ld:Remote:playroom-remote", "attribute": "upperPress" } },
-  "then": { "type": "JsonProperty", "json": [ { "entity": "urn:ngsi-ld:Light:playroom-floor-lamp", "set": { "on": true } } ] }
+  "name": { "type": "Property", "value": "room 2.14: upper button - light on" },
+  "when": { "type": "JsonProperty", "json": { "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress" } },
+  "then": { "type": "JsonProperty", "json": [ { "entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": { "on": true } } ] }
 }
 ```
 
