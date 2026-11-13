@@ -1,0 +1,89 @@
+#
+# FILE            cep_rule_deleted.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Three rules: 'lower' toggles the light and 'lowerLevel' sets level, both on lowerPress; 'upper' on upperPress.
+#   - 'upper' deleted: upperPress's subscription goes, lowerPress's stays
+#   - 'lower' deleted: lowerPress is still watched for 'lowerLevel' - a press fires that one, the deleted one not
+#
+--NAME--
+A rule deleted no longer fires; a subscription no rule needs any more is deleted
+
+--TAGS--
+cep rules reload
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, three rules, corCep started - two subscriptions"
+echo "=========================================================================="
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:room-2-14", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}, "lowerPress": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}, "level": {"type": "Property", "value": 10}, "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-upper", "type": "Rule", "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"}}, "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"mark": 1}}]}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-lower", "type": "Rule", "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "lowerPress"}}, "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "toggle": "on"}]}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-lowerLevel", "type": "Rule", "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "lowerPress"}}, "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"level": 200}}]}}'
+cepStart
+subsAwait 2
+cepSubs
+echo
+echo
+
+
+echo "02. 'upper' deleted - its subscription goes"
+echo "==========================================="
+ngsildStatus DELETE /entities/urn:ngsi-ld:Rule:room-2-14-upper
+subsAwait 1
+cepSubs
+echo
+echo
+
+
+echo "03. 'lower' deleted, lowerPress pressed - 'lowerLevel' fires, the light stays off"
+echo "================================================================================="
+ngsildStatus DELETE /entities/urn:ngsi-ld:Rule:room-2-14-lower
+cepAwaitLog "^.* 1 rule, 1 subscription$"
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"lowerPress": {"type": "Property", "value": 1}}'
+cepAwaitLog "room-2-14-lowerLevel fired"
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+grep -c "room-2-14-lower fired" "$CEP_TEST_DIR/corCep.log"
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, three rules, corCep started - two subscriptions
+==========================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+urn:ngsi-ld:Subscription:corcep-0
+urn:ngsi-ld:Subscription:corcep-1
+urn:ngsi-ld:Subscription:corcep-rules
+
+
+02. 'upper' deleted - its subscription goes
+===========================================
+DELETE /entities/urn:ngsi-ld:Rule:room-2-14-upper: 204
+urn:ngsi-ld:Subscription:corcep-1
+urn:ngsi-ld:Subscription:corcep-rules
+
+
+03. 'lower' deleted, lowerPress pressed - 'lowerLevel' fires, the light stays off
+=================================================================================
+DELETE /entities/urn:ngsi-ld:Rule:room-2-14-lower: 204
+1 rule, 1 subscription
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+rule urn:ngsi-ld:Rule:room-2-14-lowerLevel fired (urn:ngsi-ld:WallSwitch:room-2-14)
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "level": 200, "mark": 0, "on": false, "type": "Light"}
+0
+
+

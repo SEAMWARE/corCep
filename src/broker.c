@@ -7,7 +7,7 @@
 // The requests to the broker - one at a time, from the engine's thread
 //
 #include <stdio.h>                               // snprintf
-#include <string.h>                              // strlen, memcpy
+#include <string.h>                              // strlen, memcpy, strstr
 
 #include "corAlloc/corAlloc.h"                   // corAlloc
 #include "corJson/CorJson.h"                     // CorJson
@@ -16,6 +16,7 @@
 #include "corJson/corJsonRender.h"               // corJsonRender
 #include "corJson/corJsonRenderSize.h"           // corJsonRenderSize
 #include "corRest/corRestClient.h"               // corRestClientMulti*
+#include "corTree/corTreeLookup.h"               // corTreeLookup
 
 #include "corCep.h"
 
@@ -156,4 +157,23 @@ bool brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const c
 
   corRestClientMultiDestroy(multiP);
   return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// nonexistentTenant - the broker's answer is 404 NonexistentTenant: the tenant has nothing in it yet
+//
+// NGSI-LD makes a tenant when the first entity, subscription or registration is created in it; until then a
+// GET in it is this error. For corCep that is "nothing there", not a failure: it starts on a fresh tenant.
+//
+bool nonexistentTenant(CepResponse* respP)
+{
+  if ((respP->status != 404) || (respP->body == NULL))
+    return false;
+
+  CorNode* typeP = corTreeLookup(respP->body, "type");
+
+  return (typeP != NULL) && (typeP->type == CorString) && (strstr(typeP->value.s, "NonexistentTenant") != NULL);
 }

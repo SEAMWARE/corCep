@@ -1,0 +1,72 @@
+#
+# FILE            cep_rule_left_out.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# A 'when' with neither 'entity' nor 'type' cannot be subscribed to: that rule is left out, the good rule beside it runs.
+#
+--NAME--
+A rule that is not right is left out, with the reason in the log - the others run
+
+--TAGS--
+cep rules
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, a good rule and a bad one"
+echo "===================================================="
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:room-2-14", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}, "lowerPress": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}, "level": {"type": "Property", "value": 10}, "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-upper", "type": "Rule", "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"}}, "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"level": 200}}]}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-bad", "type": "Rule", "when": {"type": "JsonProperty", "json": {"attribute": "upperPress"}}, "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "toggle": "on"}]}}'
+echo
+echo
+
+
+echo "02. corCep started - the bad rule left out, and why; one rule, one subscription"
+echo "==============================================================================="
+cepStart
+cepAwaitLog "left out"
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+subsAwait 1                                      # the log line comes BEFORE the subscriptions are made
+echo
+echo
+
+
+echo "03. The upper button pressed - the good rule fires"
+echo "=================================================="
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"upperPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Light:room-2-14-desk level 200
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, a good rule and a bad one
+====================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. corCep started - the bad rule left out, and why; one rule, one subscription
+===============================================================================
+rule urn:ngsi-ld:Rule:room-2-14-bad left out: 'when' names no 'entity' and no 'type'
+1 rule, 1 subscription
+
+
+03. The upper button pressed - the good rule fires
+==================================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "level": 200, "mark": 0, "on": false, "type": "Light"}
+
+

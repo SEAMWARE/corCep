@@ -142,3 +142,56 @@ attrAwait() {
   echo "attrAwait: $1 $2 is not $3 after ${secs}s: $body" >&2
   return 1
 }
+
+
+# -----------------------------------------------------------------------------
+#
+# ngsildStatus <method> <path> [payload] - an NGSI-LD request in the test's tenant; prints '<method> <path>: <status>'
+#
+# For the setup steps of a test, where only the status matters.
+#
+ngsildStatus() {
+  local method="$1" path="$2" payload="$3"
+  local -a args=(-s -o /dev/null -w '%{http_code}' -X "$method" -H "NGSILD-Tenant: $(cepTenant)")
+
+  [ -z "$payload" ] || args+=(-H "Content-Type: application/json" -d "$payload")
+  echo "$method $path: $(curl "${args[@]}" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1$path")"
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# entityKv <entityId> - the entity, keyValues, on one line, members sorted
+#
+entityKv() {
+  curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$1?options=keyValues" |
+    python3 -I -c 'import json, sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))'
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# cepSubs - corCep's subscriptions in the test's tenant, their ids, sorted
+#
+cepSubs() {
+  curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/subscriptions?limit=1000" |
+    grep -o '"urn:ngsi-ld:Subscription:corcep-[^"]*"' | tr -d '"' | sort
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# subsAwait <n> [seconds] - wait until corCep has <n> event subscriptions (corcep-<number>; corcep-rules not counted)
+#
+subsAwait() {
+  local secs="${2:-5}" i n
+
+  for ((i = 0; i < secs * 10; i++)); do
+    n=$(cepSubs | grep -c 'corcep-[0-9]*$')
+    [ "$n" == "$1" ] && return 0
+    sleep 0.1
+  done
+
+  echo "subsAwait: $n event subscriptions, not $1, after ${secs}s" >&2
+  return 1
+}
