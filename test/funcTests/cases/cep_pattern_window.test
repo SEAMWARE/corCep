@@ -1,0 +1,120 @@
+#
+# FILE            cep_pattern_window.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# 'hot': { window: temp, for: PT2S, avg: { gt: 25 } }. 'reading', a single-event rule on the same event, is the
+# sentinel: once it has fired n times, 'hot' has seen n values.
+#
+--NAME--
+window avg: fires when the mean of the last 2 s STARTS to be above 25 - once; again only after it stopped
+
+--TAGS--
+cep pattern window
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. A sensor, three rules - 'hot' (avg of 2 s above 25), 'peak' (max of 2 s 32 or more), 'reading' (every value)"
+echo "================================================================================================================"
+S=urn:ngsi-ld:TemperatureSensor:room-2-14
+then='{"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:mark", "set": {"mark": 1}}]}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:mark", "type": "Light", "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities "{\"id\": \"$S\", \"type\": \"TemperatureSensor\", \"temperature\": {\"type\": \"Property\", \"value\": 21}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:hot\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"events\": [{\"event\": \"temp\", \"entity\": \"$S\", \"attribute\": \"temperature\"}],
+                                                   \"pattern\": {\"window\": \"temp\", \"for\": \"PT2S\", \"avg\": {\"gt\": 25}}}},
+  \"then\": $then}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:peak\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"events\": [{\"event\": \"temp\", \"entity\": \"$S\", \"attribute\": \"temperature\"}],
+                                                   \"pattern\": {\"window\": \"temp\", \"for\": \"PT2S\", \"max\": {\"ge\": 32}}}},
+  \"then\": $then}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:reading\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$S\", \"attribute\": \"temperature\"}},
+  \"then\": $then}"
+cepStart
+subsAwait 1
+echo
+echo
+
+
+echo "02. 20, 30 - the mean 25, not above, the max 30: neither fired"
+echo "=============================================================="
+attrSet $S temperature 20; firedAwait reading 1 > /dev/null
+attrSet $S temperature 30; firedAwait reading 2
+echo "hot: $(firedCount hot)"
+echo "peak: $(firedCount peak)"
+echo
+echo
+
+
+echo "03. 32 - the mean 27.3, the max 32: both fired; 40 - both hold still: NOT fired again"
+echo "======================================================================================"
+attrSet $S temperature 32; firedAwait reading 3 > /dev/null
+attrSet $S temperature 40; firedAwait reading 4
+echo "hot: $(firedCount hot)"
+echo "peak: $(firedCount peak)"
+echo
+echo
+
+
+echo "04. A value that is not a number - not in the window, logged"
+echo "==========================================================="
+attrSet $S temperature '"n/a"'; firedAwait reading 5
+cepAwaitLog "Rule:hot: .*not a number"
+echo
+echo
+
+
+echo "05. The window empties (2 s) - the mean no longer above; 30 - above again: fired again"
+echo "====================================================================================="
+sleep 2.3
+attrSet $S temperature 30; firedAwait reading 6
+echo "hot: $(firedCount hot)"
+echo "peak: $(firedCount peak)"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A sensor, three rules - 'hot' (avg of 2 s above 25), 'peak' (max of 2 s 32 or more), 'reading' (every value)
+================================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. 20, 30 - the mean 25, not above, the max 30: neither fired
+==============================================================
+reading: 2
+hot: 0
+peak: 0
+
+
+03. 32 - the mean 27.3, the max 32: both fired; 40 - both hold still: NOT fired again
+======================================================================================
+reading: 4
+hot: 1
+peak: 1
+
+
+04. A value that is not a number - not in the window, logged
+===========================================================
+reading: 5
+rule urn:ngsi-ld:Rule:hot: urn:ngsi-ld:TemperatureSensor:room-2-14's 'temperature' is not a number - not in the window
+
+
+05. The window empties (2 s) - the mean no longer above; 30 - above again: fired again
+=====================================================================================
+reading: 6
+hot: 2
+peak: 1
+
+

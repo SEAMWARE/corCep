@@ -250,3 +250,14 @@ press() {
        -d "{\"$2\": {\"type\": \"Property\", \"value\": 1}}" \
        "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$1/attrs"
 }
+
+
+# -----------------------------------------------------------------------------
+#
+# attrSet <entityId> <attribute> <value> - an update of the attribute to <value>, given as JSON (21.5, "n/a")
+#
+attrSet() {
+  curl -s -o /dev/null -X PATCH -H "NGSILD-Tenant: $(cepTenant)" -H "Content-Type: application/json" \
+       -d "{\"$2\": {\"type\": \"Property\", \"value\": $3}}" \
+       "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$1/attrs"
+}

@@ -65,6 +65,8 @@ typedef struct Stats
   char           lastError[384];                 // "" - none since corCep started
   char           lastErrorAt[32];
   bool           dirty;                          // changed since written
+  long long      droppedWritten;                 // droppedMatches as last written
+  long long      droppedValuesWritten;           // droppedValues as last written
   bool           seen;                           // in the generation running
   time_t         writtenAt;
 } Stats;
@@ -620,7 +622,8 @@ static Stats* statsOf(CepRule* ruleP)
 
 // -----------------------------------------------------------------------------
 //
-// statsWrite - POST /entities/<rule>/attrs: fired, firedAt, lastError (append: made the first time, replaced after)
+// statsWrite - POST /entities/<rule>/attrs: fired, firedAt, droppedMatches, droppedValues, lastError (append: made
+// the first time, replaced after)
 //
 static void statsWrite(CorAlloc* allocP, Stats* sP)
 {
@@ -652,6 +655,18 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
     corTreeChildAdd(dP, corTreeInteger(allocP, "value", dropped));
     corTreeChildAdd(bodyP, dP);
   }
+  sP->droppedWritten = dropped;
+
+  long long droppedValues = patternsDroppedValues(sP->id);
+  if (droppedValues > 0)
+  {
+    CorNode* dP = corTreeObject(allocP, "droppedValues");
+
+    corTreeChildAdd(dP, corTreeString(allocP, "type", "Property"));
+    corTreeChildAdd(dP, corTreeInteger(allocP, "value", droppedValues));
+    corTreeChildAdd(bodyP, dP);
+  }
+  sP->droppedValuesWritten = droppedValues;
 
   if (sP->lastError[0] != 0)
   {
@@ -686,6 +701,9 @@ static void statsFlush(CorAlloc* allocP)
 
   for (Stats* sP = statsList; sP != NULL; sP = sP->next)
   {
+    if ((patternsDropped(sP->id) != sP->droppedWritten) || (patternsDroppedValues(sP->id) != sP->droppedValuesWritten))
+      sP->dirty = true;                          // a drop is news without a fire too
+
     if ((sP->dirty == true) && (sP->seen == true) && (now - sP->writtenAt >= statsInterval))
       statsWrite(allocP, sP);
   }
@@ -796,7 +814,14 @@ static void eventHandle(CorAlloc* allocP, int sub, char* body)
       StepperKey until = { NULL, NULL, NULL, rules->watchV[n].sub, idP->value.s };
       steppersDrop(&until);
     }
-    patternsEvent(rules, n, idP->value.s, nowMs(), fireCb, allocP);
+
+    CorNode* vP = corTreeLookup(eP, wP->attribute);                       // keyValues: the value itself
+    double   v  = 0;
+    bool     number = (vP->type == CorInt) || (vP->type == CorFloat);
+
+    if (number)
+      v = (vP->type == CorInt) ? (double) vP->value.i : vP->value.f;
+    patternsEvent(rules, n, idP->value.s, number ? &v : NULL, nowMs(), fireCb, allocP);
   }
 }
 
