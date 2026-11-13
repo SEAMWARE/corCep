@@ -231,6 +231,18 @@ firedAwait() {
 
 # -----------------------------------------------------------------------------
 #
+# msNow - the time in milliseconds, from bash itself ($EPOCHREALTIME: seconds, the locale's radix, 6 digits)
+#
+# Not `date +%s%3N`: uutils' date (the CI image's) ignores the 3 and prints nanoseconds.
+#
+msNow() {
+  local us="${EPOCHREALTIME//[.,]/}"
+  echo $((us / 1000))
+}
+
+
+# -----------------------------------------------------------------------------
+#
 # press <entityId> <attribute> - an update of the attribute (the value 1 each time - the same value is an event too)
 #
 press() {
