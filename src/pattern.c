@@ -15,6 +15,9 @@
 //           them, min and max from a monotonic deque (only the values that can still be the min / max). Done when
 //           its bounds START to hold - on an event, or when a value leaves the window; again only after they have
 //           stopped holding. An empty window: avg, min, max, sum do not hold, count is 0.
+//   cron, at  a wall-clock deadline (schedule.c): fired when it passes, the next one computed from then. corCep not
+//           running at the time: that fire is not made up for. The loop sleeps on the monotonic clock - the deadline
+//           is converted on every turn, so a clock set (NTP, daylight saving) is followed.
 //
 // Semantics, as SQL:2016 row pattern recognition's defaults:
 //   - an event goes to the OLDEST partial match that can take it; one that took it starts no new match
@@ -103,6 +106,7 @@ typedef struct Part
   double        sum;                             // window - sum, avg: the values' sum
   bool          holding;                         // window - its bounds held at the last look
   char*         windowEntity;                    // window - the entity of the last value
+  time_t        scheduleAt;                      // cron, at - the next fire, wall clock; 0: none
 } Part;
 
 
@@ -203,6 +207,23 @@ static void setStr(char** pP, const char* s)
 
 // -----------------------------------------------------------------------------
 //
+// scheduleSet - a cron / at rule's next fire after <after>, logged
+//
+static void scheduleSet(CepRule* ruleP, Part* pP, time_t after)
+{
+  char buf[64];
+
+  pP->scheduleAt = scheduleNext(ruleP, after);
+  if (pP->scheduleAt != 0)
+    logLine("rule %s: next %s", ruleP->id, scheduleText(pP->scheduleAt, buf, sizeof(buf)));
+  else
+    logLine("rule %s: the schedule fires no more", ruleP->id);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // patternsAdopt - a new generation of rules: the state of each rule found by id - kept if its 'when' is the
 // same, started afresh if not; the state of rules gone dropped. An 'absent' rule on an entity id starts its
 // timer now: no event at all for 'for' is an absence too.
@@ -252,6 +273,13 @@ void patternsAdopt(CepRules* rulesP, long long now)
 
     sP->seen        = true;
     ruleStateV[ix]  = sP;
+
+    if ((ruleP->kind == CepPatternCron) || (ruleP->kind == CepPatternAt))
+    {
+      Part* pP = partOf(sP, "");
+      if ((pP != NULL) && (pP->scheduleAt == 0))
+        scheduleSet(ruleP, pP, time(NULL));
+    }
 
     if (fresh && (ruleP->kind == CepPatternAbsent) && (ruleP->partitioned == false))
     {
@@ -810,6 +838,28 @@ long long patternsTimers(CepRules* rulesP, long long now, CepFireFn fire, void* 
 
     for (Part* pP = sP->parts; pP != NULL; pP = pP->next)
     {
+      if ((ruleP->kind == CepPatternCron) || (ruleP->kind == CepPatternAt))
+      {
+        struct timespec wall;
+        clock_gettime(CLOCK_REALTIME, &wall);
+        long long wallMs = (long long) wall.tv_sec * 1000 + wall.tv_nsec / 1000000;
+
+        if ((pP->scheduleAt != 0) && ((long long) pP->scheduleAt * 1000 <= wallMs))
+        {
+          time_t at = pP->scheduleAt;
+          fire(ruleP, NULL, ctx);
+          scheduleSet(ruleP, pP, (at > wall.tv_sec) ? at : wall.tv_sec);
+        }
+
+        if (pP->scheduleAt != 0)
+        {
+          long long at = now + ((long long) pP->scheduleAt * 1000 - wallMs);
+          if ((next == 0) || (at < next))
+            next = at;
+        }
+        continue;
+      }
+
       if (ruleP->kind == CepPatternWindow)        // a value leaving the window may change what holds
       {
         windowExpire(ruleP, pP, now);

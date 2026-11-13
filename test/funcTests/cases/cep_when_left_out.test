@@ -7,7 +7,7 @@
 # A 'when' that is not right: each such rule is left out, the log says why, the good rule beside them runs.
 #
 --NAME--
-when that is not right - left out with the reason: pattern without events, two events without a pattern, unknown and duplicate names, a pattern not supported yet (cron), where not a string
+when that is not right - left out with the reason: pattern without events, two events without a pattern, unknown and duplicate names, where not a string
 
 --TAGS--
 cep pattern rules
@@ -16,8 +16,8 @@ cep pattern rules
 cepTestInit
 
 --RUN--
-echo "01. Seven bad rules and a good one - each bad one left out, with why; one rule runs"
-echo "===================================================================================="
+echo "01. Six bad rules and a good one - each bad one left out, with why; one rule runs"
+echo "================================================================================="
 up='{"event": "up", "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"}'
 down='{"event": "down", "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "lowerPress"}'
 then='{"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"on": true}}]}'
@@ -26,7 +26,6 @@ rule a-pattern-no-events  '{"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attri
 rule b-two-no-pattern     "{\"events\": [$up, $down]}"
 rule c-unknown-name       "{\"events\": [$up, $down], \"pattern\": \"sideways\"}"
 rule d-duplicate-name     "{\"events\": [$up, $up], \"pattern\": \"up\"}"
-rule e-cron               "{\"events\": [$up], \"pattern\": {\"cron\": \"0 7 * * 1-5\"}}"
 rule f-any-twice          "{\"events\": [$up, $down], \"pattern\": {\"any\": [\"up\", \"up\"]}}"
 rule g-where-number       '{"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress", "where": 5}'
 rule h-good               "{\"events\": [$up, $down], \"pattern\": {\"any\": [\"up\", \"down\"]}}"
@@ -41,9 +40,8 @@ echo
 cepStop
 
 --EXPECT--
-01. Seven bad rules and a good one - each bad one left out, with why; one rule runs
-====================================================================================
-POST /entities: 201
+01. Six bad rules and a good one - each bad one left out, with why; one rule runs
+=================================================================================
 POST /entities: 201
 POST /entities: 201
 POST /entities: 201
@@ -55,7 +53,6 @@ rule urn:ngsi-ld:Rule:a-pattern-no-events left out: 'when': a 'pattern' needs 'e
 rule urn:ngsi-ld:Rule:b-two-no-pattern left out: 'when': 2 events need a 'pattern' - { "any": [ ... ] }
 rule urn:ngsi-ld:Rule:c-unknown-name left out: the pattern names 'sideways' - no such event in 'events'
 rule urn:ngsi-ld:Rule:d-duplicate-name left out: 'events': two events named 'up'
-rule urn:ngsi-ld:Rule:e-cron left out: pattern 'cron' is not supported yet
 rule urn:ngsi-ld:Rule:f-any-twice left out: 'any' names 'up' twice
 rule urn:ngsi-ld:Rule:g-where-number left out: 'when': 'where' - an NGSI-LD q, a string
 1 rule, 2 subscriptions

@@ -66,7 +66,7 @@ rule urn:ngsi-ld:Rule:d-zero-duration left out: 'seq' needs 'within' - an ISO 86
 rule urn:ngsi-ld:Rule:e-repeat-min-1 left out: 'repeat' needs 'min' - a number, 2 to 1000
 rule urn:ngsi-ld:Rule:f-absent-no-for left out: 'absent' needs 'for' - an ISO 8601 duration ("PT10M")
 rule urn:ngsi-ld:Rule:g-supersedes-any left out: 'supersedes' - with a 'seq', 'all' or 'repeat' pattern only (it waits their 'within')
-rule urn:ngsi-ld:Rule:h-no-kind left out: 'pattern' names no kind (any, seq, all, repeat, absent, window)
+rule urn:ngsi-ld:Rule:h-no-kind left out: 'pattern' names no kind (any, seq, all, repeat, absent, window, cron, at)
 1 rule, 1 subscription
 
 

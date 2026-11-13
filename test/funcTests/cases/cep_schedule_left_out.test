@@ -1,0 +1,66 @@
+#
+# FILE            cep_schedule_left_out.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Each bad schedule left out, the log says why.
+#
+--NAME--
+Schedules that are not right - left out with the reason
+
+--TAGS--
+cep schedule rules
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. Ten bad schedules - each left out, with why"
+echo "==============================================="
+then='{"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:mark", "set": {"mark": 1}}]}'
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\" $3, \"when\": {\"type\": \"JsonProperty\", \"json\": {\"pattern\": $2}}, \"then\": $then}"; }
+rule a-cron-4-fields     '{"cron": "0 7 * *"}'
+rule b-cron-minute-61    '{"cron": "61 7 * * *"}'
+rule c-cron-bad-name     '{"cron": "0 7 * * XYZ"}'
+rule d-cron-never        '{"cron": "0 0 30 2 *"}'
+rule e-cron-number       '{"cron": 7}'
+rule f-at-25             '{"at": "25:00"}'
+rule g-at-one-digit      '{"at": "7:00"}'
+rule h-sunset-no-place   '{"at": "sunset"}'
+rule i-sunset-a-line    '{"at": "sunset"}' ', "location": {"type": "GeoProperty", "value": {"type": "LineString", "coordinates": [[0, 40], [1, 41]]}}'
+rule j-offset-bad        '{"at": "07:00", "offset": "-30M"}'
+cepStart
+grep -o "rule urn:ngsi-ld:Rule:.* left out: .*" "$CEP_TEST_DIR/corCep.log" | sort
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. Ten bad schedules - each left out, with why
+===============================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+rule urn:ngsi-ld:Rule:a-cron-4-fields left out: 'cron' - 5 fields (minute hour day month weekday), or 6 with the second first: '0 7 * *'
+rule urn:ngsi-ld:Rule:b-cron-minute-61 left out: 'cron': the minute field '61' - *, n, a-b, a list, /step; 0 to 59
+rule urn:ngsi-ld:Rule:c-cron-bad-name left out: 'cron': the day of week field 'XYZ' - *, n, a-b, a list, /step; 0 to 7
+rule urn:ngsi-ld:Rule:d-cron-never left out: the schedule never fires (within 5 years for 'cron', a year for 'at')
+rule urn:ngsi-ld:Rule:e-cron-number left out: 'cron' - a string
+rule urn:ngsi-ld:Rule:f-at-25 left out: 'at' - "HH:MM", "HH:MM:SS", "sunrise" or "sunset": '25:00'
+rule urn:ngsi-ld:Rule:g-at-one-digit left out: 'at' - "HH:MM", "HH:MM:SS", "sunrise" or "sunset": '7:00'
+rule urn:ngsi-ld:Rule:h-sunset-no-place left out: 'at': 'sunset' needs the Rule's 'location' - a GeoProperty, a Point
+rule urn:ngsi-ld:Rule:i-sunset-a-line left out: 'at': 'sunset' needs the Rule's 'location' - a GeoProperty, a Point
+rule urn:ngsi-ld:Rule:j-offset-bad left out: 'offset' - an ISO 8601 duration, '-' before it for earlier ("-PT30M")
+
+

@@ -10,6 +10,7 @@
 #define CORCEP_CORCEP_H_
 
 #include <stdbool.h>                             // bool
+#include <time.h>                                // time_t
 
 #include "corAlloc/CorAlloc.h"                   // CorAlloc
 #include "corTree/CorNode.h"                     // CorNode
@@ -108,8 +109,29 @@ typedef enum CepPatternKind
   CepPatternAll,                                 // every step, in any order, all within 'within'
   CepPatternRepeat,                              // one event 'min' times within 'within'
   CepPatternAbsent,                              // no event for 'for': a timer each event restarts
-  CepPatternWindow                               // an aggregate of the values of the last 'for' - fires when its bounds start to hold
+  CepPatternWindow,                              // an aggregate of the values of the last 'for' - fires when its bounds start to hold
+  CepPatternCron,                                // a cron schedule - no events
+  CepPatternAt                                   // every day at a clock time, sunrise or sunset - no events
 } CepPatternKind;
+
+typedef struct CepCron                           // a cron schedule: a bit per value of each field
+{
+  unsigned long long  second;                    // 0-59
+  unsigned long long  minute;                    // 0-59
+  unsigned long long  hour;                      // 0-23
+  unsigned long long  mday;                      // 1-31
+  unsigned long long  month;                     // 1-12
+  unsigned long long  wday;                      // 0-6, Sunday 0
+  bool                mdayStar;                  // day of month '*' - then day of week alone decides (and the other way round)
+  bool                wdayStar;
+} CepCron;
+
+typedef enum CepAtKind
+{
+  CepAtClock,
+  CepAtSunrise,
+  CepAtSunset
+} CepAtKind;
 
 typedef enum CepWindowAgg
 {
@@ -142,6 +164,12 @@ typedef struct CepRule
   CepWindowAgg    aggregate;                     // Window
   double          boundV[4];                     // Window: by CepBound
   unsigned        bounds;                        // Window: the bounds given, a bit each (1 << CepBound)
+  CepCron         cron;                          // Cron
+  CepAtKind       atKind;                        // At
+  int             atSecond;                      // At, clock: the second of the day
+  long long       offsetS;                       // At: 'offset', seconds, signed
+  double          lat;                           // At, sun: the Rule entity's 'location'
+  double          lon;
   int             min;                           // Repeat
   char**          supersedeV;                    // the rules this one supersedes (their ids)
   int             supersedes;
@@ -204,6 +232,13 @@ extern void      patternsEvent(CepRules* rulesP, int watch, const char* entity, 
 extern long long patternsTimers(CepRules* rulesP, long long now, CepFireFn fire, void* ctx);   // the expired ones run; the next deadline, 0: none
 extern long long patternsDropped(const char* ruleId);                         // partial matches dropped (the bound), since start
 extern long long patternsDroppedValues(const char* ruleId);                   // window values dropped (the bound), since start
+
+//
+// The schedules (schedule.c)
+//
+extern bool   cronParse(const char* text, CepCron* cP, char* why, int whyLen);
+extern time_t scheduleNext(const CepRule* ruleP, time_t after);              // the next fire after <after>; 0: never
+extern char*  scheduleText(time_t t, char* buf, int bufLen);                  // local, with the offset
 
 extern void logLine(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 

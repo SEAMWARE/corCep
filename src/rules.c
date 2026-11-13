@@ -245,6 +245,119 @@ static bool patternOne(CorAlloc* allocP, CepRule* ruleP, CepEvent* declV, int de
 
 // -----------------------------------------------------------------------------
 //
+// scheduleParse - { "cron": "<fields>" } or { "at": "HH:MM[:SS]" | "sunrise" | "sunset", "offset": "[-]<duration>" }
+//
+// The location of sunrise / sunset is the Rule entity's - rulesLoad reads it (locationParse).
+//
+static bool scheduleParse(CorAlloc* allocP, CorNode* patternP, CorNode* kindP, CepRule* ruleP, char* why, int whyLen)
+{
+  ruleP->eventV = (CepEvent*) corAlloc(allocP, sizeof(CepEvent));      // none - never fed
+  ruleP->events = 0;
+
+  if (kindP->type != CorString)
+  {
+    snprintf(why, whyLen, "'%s' - a string", kindP->name);
+    return false;
+  }
+
+  if (strcmp(kindP->name, "cron") == 0)
+  {
+    ruleP->kind = CepPatternCron;
+    if (cronParse(kindP->value.s, &ruleP->cron, why, whyLen) == false)
+      return false;
+  }
+  else
+  {
+    const char* at = kindP->value.s;
+    int         h, m, s = 0;
+    char        end;
+
+    ruleP->kind = CepPatternAt;
+
+    if (strcmp(at, "sunrise") == 0)
+      ruleP->atKind = CepAtSunrise;
+    else if (strcmp(at, "sunset") == 0)
+      ruleP->atKind = CepAtSunset;
+    else if (((sscanf(at, "%2d:%2d:%2d%c", &h, &m, &s, &end) == 3) || ((sscanf(at, "%2d:%2d%c", &h, &m, &end) == 2) && (strlen(at) == 5))) &&
+             (h >= 0) && (h <= 23) && (m >= 0) && (m <= 59) && (s >= 0) && (s <= 59))
+    {
+      ruleP->atKind   = CepAtClock;
+      ruleP->atSecond = h * 3600 + m * 60 + s;
+    }
+    else
+    {
+      snprintf(why, whyLen, "'at' - \"HH:MM\", \"HH:MM:SS\", \"sunrise\" or \"sunset\": '%s'", at);
+      return false;
+    }
+
+    CorNode* offsetP = corTreeLookup(patternP, "offset");
+    if (offsetP != NULL)
+    {
+      long long ms;
+      bool      minus = (offsetP->type == CorString) && (offsetP->value.s[0] == '-');
+
+      if ((offsetP->type != CorString) || (durationParse(offsetP->value.s + (minus ? 1 : 0), &ms) == false))
+      {
+        snprintf(why, whyLen, "'offset' - an ISO 8601 duration, '-' before it for earlier (\"-PT30M\")");
+        return false;
+      }
+      ruleP->offsetS = (minus ? -ms : ms) / 1000;
+    }
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// locationParse - a sunrise / sunset rule's place: the Rule entity's 'location', a GeoJSON Point (keyValues)
+//
+static bool locationParse(CorAlloc* allocP, CorNode* entityP, CepRule* ruleP, char* why, int whyLen)
+{
+  CorNode* locP    = corTreeLookup(entityP, "location");
+  CorNode* typeP   = (locP != NULL) && (locP->type == CorObject) ? corTreeLookup(locP, "type")        : NULL;
+  CorNode* coordsP = (locP != NULL) && (locP->type == CorObject) ? corTreeLookup(locP, "coordinates") : NULL;
+  CorNode* lonP    = ((coordsP != NULL) && (coordsP->type == CorArray)) ? coordsP->value.head : NULL;
+  CorNode* latP    = (lonP != NULL) ? lonP->next : NULL;
+
+  if ((typeP == NULL) || (typeP->type != CorString) || (strcmp(typeP->value.s, "Point") != 0) ||
+      (lonP == NULL) || ((lonP->type != CorInt) && (lonP->type != CorFloat)) ||
+      (latP == NULL) || ((latP->type != CorInt) && (latP->type != CorFloat)))
+  {
+    snprintf(why, whyLen, "'at': '%s' needs the Rule's 'location' - a GeoProperty, a Point", (ruleP->atKind == CepAtSunrise) ? "sunrise" : "sunset");
+    return false;
+  }
+
+  ruleP->lon = (lonP->type == CorInt) ? (double) lonP->value.i : lonP->value.f;
+  ruleP->lat = (latP->type == CorInt) ? (double) latP->value.i : latP->value.f;
+
+  if ((ruleP->lat < -90) || (ruleP->lat > 90) || (ruleP->lon < -180) || (ruleP->lon > 180))
+  {
+    snprintf(why, whyLen, "'location' - [ longitude -180..180, latitude -90..90 ]");
+    return false;
+  }
+
+  //
+  // The place is part of what the rule's state hangs on: another place - the next time computed afresh
+  //
+  char   place[64];
+  size_t len = strlen(ruleP->whenText);
+
+  snprintf(place, sizeof(place), "|%.6f,%.6f", ruleP->lon, ruleP->lat);
+  char* text = corAlloc(allocP, len + strlen(place) + 1);
+  memcpy(text, ruleP->whenText, len);
+  strcpy(text + len, place);
+  ruleP->whenText = text;
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // windowParse - the parameters of a window: 'for', and ONE aggregate with its bounds
 //
 static bool windowParse(CorNode* patternP, CepRule* ruleP, char* why, int whyLen)
@@ -327,8 +440,10 @@ static bool windowParse(CorNode* patternP, CepRule* ruleP, char* why, int whyLen
 //   { "window": <name>, "for": <duration>, "<aggregate>": { "<bound>": <number>, ... } }
 //                                                           an aggregate of the last 'for' of values: avg, min, max,
 //                                                           sum or count - one; bounds gt, ge, lt, le - all must hold
-//
-// "at" and "cron" are recognised and refused: not supported yet. "supersedes" (seq, all, repeat): the
+//   { "cron": "<min> <hour> <dom> <month> <dow>" }          a cron schedule (6 fields: the second first) - no events
+//   { "at": "HH:MM[:SS]" | "sunrise" | "sunset", "offset": <signed duration> }
+//                                                           every day; the sun at the Rule's 'location' - no events
+// "supersedes" (seq, all, repeat): the
 // ids of the rules this one supersedes - each of their fires waits 'within', and a match of this one cancels it.
 //
 static bool patternParse(CorAlloc* allocP, CorNode* patternP, CepRule* ruleP, CepEvent* declV, int decls, char* why, int whyLen)
@@ -350,17 +465,14 @@ static bool patternParse(CorAlloc* allocP, CorNode* patternP, CepRule* ruleP, Ce
 
   if (kindP == NULL)
   {
-    snprintf(why, whyLen, "'pattern' names no kind (any, seq, all, repeat, absent, window)");
+    snprintf(why, whyLen, "'pattern' names no kind (any, seq, all, repeat, absent, window, cron, at)");
     return false;
   }
 
   const char* kind = kindP->name;
 
   if ((strcmp(kind, "at") == 0) || (strcmp(kind, "cron") == 0))
-  {
-    snprintf(why, whyLen, "pattern '%s' is not supported yet", kind);
-    return false;
-  }
+    return scheduleParse(allocP, patternP, kindP, ruleP, why, whyLen);
 
   ruleP->eventV = (CepEvent*) corAlloc(allocP, decls * sizeof(CepEvent));
   ruleP->events = 0;
@@ -485,6 +597,12 @@ static bool whenParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* wh
 
   CorNode* eventsP  = corTreeLookup(whenP, "events");
   CorNode* patternP = corTreeLookup(whenP, "pattern");
+
+  bool schedule = (patternP != NULL) && (patternP->type == CorObject) &&
+                  ((corTreeLookup(patternP, "cron") != NULL) || (corTreeLookup(patternP, "at") != NULL));
+
+  if ((eventsP == NULL) && schedule)                                       // a schedule: no events needed
+    return patternParse(allocP, patternP, ruleP, NULL, 0, why, whyLen);
 
   if (eventsP == NULL)
   {
@@ -863,7 +981,7 @@ static bool whenExtras(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* w
   //
   // Every event a type selector (no entity id): a match per entity - two switches' presses are not one double press
   //
-  ruleP->partitioned = true;
+  ruleP->partitioned = (ruleP->kind != CepPatternCron) && (ruleP->kind != CepPatternAt);
   for (int ix = 0; ix < ruleP->events; ix++)
   {
     if (ruleP->eventV[ix].entity != NULL)
@@ -947,6 +1065,15 @@ CepRules* rulesLoad(void)
 
     if (condParse(&rP->alloc, json(eP, "when"), ruleP, why, sizeof(why)) == false)
       goto bad;
+
+    if ((ruleP->kind == CepPatternAt) && (ruleP->atKind != CepAtClock) && (locationParse(&rP->alloc, eP, ruleP, why, sizeof(why)) == false))
+      goto bad;
+
+    if (((ruleP->kind == CepPatternCron) || (ruleP->kind == CepPatternAt)) && (scheduleNext(ruleP, time(NULL)) == 0))
+    {
+      snprintf(why, sizeof(why), "the schedule never fires (within 5 years for 'cron', a year for 'at')");
+      goto bad;
+    }
 
     CorNode* firedP = corTreeLookup(eP, "fired");
     if ((firedP != NULL) && (firedP->type == CorInt))
