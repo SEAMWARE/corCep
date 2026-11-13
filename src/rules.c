@@ -68,6 +68,30 @@ static int count(CorNode* nP)
 
 // -----------------------------------------------------------------------------
 //
+// idType - an NGSI-LD id's type: urn:ngsi-ld:<type>:... ; NULL: the id holds none
+//
+static char* idType(CorAlloc* allocP, const char* id)
+{
+  if (strncmp(id, "urn:ngsi-ld:", 12) != 0)
+    return NULL;
+
+  const char* t   = id + 12;
+  const char* end = strchr(t, ':');
+
+  if ((end == NULL) || (end == t))
+    return NULL;
+
+  char* type = corAlloc(allocP, end - t + 1);
+  memcpy(type, t, end - t);
+  type[end - t] = 0;
+
+  return type;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // eventParse - one event: { "event": name, "entity": id | "type": type, "attribute": attribute, "where": q }
 //
 static bool eventParse(CorAlloc* allocP, CorNode* evNodeP, CepEvent* evP, const char* what, char* why, int whyLen)
@@ -103,17 +127,8 @@ static bool eventParse(CorAlloc* allocP, CorNode* evNodeP, CepEvent* evP, const 
   //
   // An EntitySelector needs a type: an id alone gives its own - urn:ngsi-ld:<type>:...
   //
-  if ((type == NULL) && (strncmp(entity, "urn:ngsi-ld:", 12) == 0))
-  {
-    const char* t   = entity + 12;
-    const char* end = strchr(t, ':');
-    if ((end != NULL) && (end > t))
-    {
-      type = corAlloc(allocP, end - t + 1);
-      memcpy(type, t, end - t);
-      type[end - t] = 0;
-    }
-  }
+  if (type == NULL)
+    type = idType(allocP, entity);
   if (type == NULL)
   {
     snprintf(why, whyLen, "%s names an entity whose id holds no type (urn:ngsi-ld:<type>:...) - give 'type' too", what);
@@ -404,6 +419,8 @@ static bool whenParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* wh
 
     ruleP->eventV = (CepEvent*) corAlloc(allocP, sizeof(CepEvent));
     ruleP->events = 1;
+    ruleP->declV  = ruleP->eventV;
+    ruleP->decls  = 1;
     return eventParse(allocP, whenP, &ruleP->eventV[0], "'when'", why, whyLen);
   }
 
@@ -439,6 +456,9 @@ static bool whenParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* wh
     ++decls;
   }
 
+  ruleP->declV = declV;
+  ruleP->decls = decls;
+
   //
   // The pattern
   //
@@ -468,9 +488,75 @@ static bool whenParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* wh
 
 // -----------------------------------------------------------------------------
 //
-// actionParse - one of `then`: { "set": {...}, "entity": id } | { "toggle": attribute, "entity": id }
+// numberOf - a number member: true and *vP if present and a number
 //
-static bool actionParse(CorAlloc* allocP, CorNode* aP, CepAction* actP, char* why, int whyLen)
+static bool numberOf(CorNode* objP, const char* name, double* vP)
+{
+  CorNode* nP = corTreeLookup(objP, name);
+
+  if (nP == NULL)
+    return false;
+  if (nP->type == CorInt)
+    *vP = (double) nP->value.i;
+  else if (nP->type == CorFloat)
+    *vP = nP->value.f;
+  else
+    return false;
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// untilOf - the event a step stops at: declared in 'events', not used by the pattern; its index in untilV
+//
+static int untilOf(CorAlloc* allocP, CepRule* ruleP, const char* name, char* why, int whyLen)
+{
+  for (int ix = 0; ix < ruleP->events; ix++)
+  {
+    if (strcmp(ruleP->eventV[ix].name, name) == 0)
+    {
+      snprintf(why, whyLen, "'until' names '%s', an event of the pattern - it would fire the rule too", name);
+      return -1;
+    }
+  }
+
+  for (int ix = 0; ix < ruleP->untils; ix++)
+  {
+    if (strcmp(ruleP->untilV[ix].name, name) == 0)
+      return ix;
+  }
+
+  for (int ix = 0; ix < ruleP->decls; ix++)
+  {
+    if (strcmp(ruleP->declV[ix].name, name) == 0)
+    {
+      if (ruleP->untilV == NULL)
+        ruleP->untilV = (CepEvent*) corAlloc(allocP, ruleP->decls * sizeof(CepEvent));
+      ruleP->untilV[ruleP->untils] = ruleP->declV[ix];
+      return ruleP->untils++;
+    }
+  }
+
+  snprintf(why, whyLen, "'until' names '%s' - no such event in 'events'", name);
+  return -1;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// actionParse - one of `then`. The target: "entity": <id>, or "type": <type> with an optional "q" - every entity
+// of the type that matches. What is done, one of:
+//
+//   "set":    { "<attribute>": <value>, ... }          PATCHed as Properties
+//   "toggle": "<attribute>"                            a boolean: read, the other value PATCHed
+//   "step":   { "attribute", "by", "every", "min", "max", "for" }, "until": "<event>"
+//             a number: 'by' added every 'every' - until the event, a bound, or 'for' (default PT30S)
+//
+static bool actionParse(CorAlloc* allocP, CepRule* ruleP, CorNode* aP, CepAction* actP, char* why, int whyLen)
 {
   if (aP->type != CorObject)
   {
@@ -479,21 +565,38 @@ static bool actionParse(CorAlloc* allocP, CorNode* aP, CepAction* actP, char* wh
   }
 
   char*    entity = str(aP, "entity");
+  char*    type   = str(aP, "type");
+  char*    q      = str(aP, "q");
   CorNode* setP   = corTreeLookup(aP, "set");
   char*    toggle = str(aP, "toggle");
+  CorNode* stepP  = corTreeLookup(aP, "step");
+  char*    until  = str(aP, "until");
 
-  if (entity == NULL)
+  if ((entity == NULL) == (type == NULL))
   {
-    snprintf(why, whyLen, "an action names no 'entity'");
+    snprintf(why, whyLen, "an action names its target: 'entity', or 'type' (and 'q') - one of them");
     return false;
   }
-  if ((setP != NULL) == (toggle != NULL))
+  if ((q != NULL) && (type == NULL))
   {
-    snprintf(why, whyLen, "an action is one of 'set' and 'toggle'");
+    snprintf(why, whyLen, "an action's 'q' - with 'type' only");
+    return false;
+  }
+  if ((setP != NULL) + (toggle != NULL) + (stepP != NULL) != 1)
+  {
+    snprintf(why, whyLen, "an action is one of 'set', 'toggle' and 'step'");
+    return false;
+  }
+  if ((until != NULL) && (stepP == NULL))
+  {
+    snprintf(why, whyLen, "'until' - with 'step' only");
     return false;
   }
 
-  actP->entity = corAllocStrdup(allocP, entity);
+  actP->entity = (entity != NULL) ? corAllocStrdup(allocP, entity) : NULL;
+  actP->type   = (type   != NULL) ? corAllocStrdup(allocP, type)   : NULL;
+  actP->q      = (q      != NULL) ? corAllocStrdup(allocP, q)      : NULL;
+  actP->until  = -1;
 
   if (setP != NULL)
   {
@@ -504,11 +607,94 @@ static bool actionParse(CorAlloc* allocP, CorNode* aP, CepAction* actP, char* wh
     }
     actP->kind = CepActionSet;
     actP->set  = setP;                                 // lives in the generation's allocator
+    return true;
   }
-  else
+
+  if (toggle != NULL)
   {
     actP->kind      = CepActionToggle;
     actP->attribute = corAllocStrdup(allocP, toggle);
+    return true;
+  }
+
+  //
+  // step
+  //
+  char* attribute = (stepP->type == CorObject) ? str(stepP, "attribute") : NULL;
+  char* every     = (stepP->type == CorObject) ? str(stepP, "every")     : NULL;
+  char* forS      = (stepP->type == CorObject) ? str(stepP, "for")       : NULL;
+
+  if ((attribute == NULL) || (numberOf(stepP, "by", &actP->by) == false) || (actP->by == 0))
+  {
+    snprintf(why, whyLen, "'step' needs 'attribute' and 'by' - a number, not 0");
+    return false;
+  }
+  if ((every == NULL) || (durationParse(every, &actP->everyMs) == false) || (actP->everyMs < 50))
+  {
+    snprintf(why, whyLen, "'step' needs 'every' - an ISO 8601 duration, PT0.05S or more");
+    return false;
+  }
+  actP->forMs = 30000;
+  if ((forS != NULL) && (durationParse(forS, &actP->forMs) == false))
+  {
+    snprintf(why, whyLen, "'step': 'for' - an ISO 8601 duration");
+    return false;
+  }
+
+  actP->kind      = CepActionStep;
+  actP->attribute = corAllocStrdup(allocP, attribute);
+  actP->hasMin    = numberOf(stepP, "min", &actP->min);
+  actP->hasMax    = numberOf(stepP, "max", &actP->max);
+
+  if (until != NULL)
+  {
+    actP->until = untilOf(allocP, ruleP, until, why, whyLen);
+    if (actP->until < 0)
+      return false;
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// condParse - 'if': { "entity": <id> | "type": <type>, "q": <q> }, or a list of them - each must hold
+//
+static bool condParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* why, int whyLen)
+{
+  CorNode* ifP = corTreeLookup(whenP, "if");
+
+  if (ifP == NULL)
+    return true;
+
+  int n = (ifP->type == CorArray) ? count(ifP) : 1;
+  ruleP->condV = (CepCondition*) corAlloc(allocP, n * sizeof(CepCondition));
+
+  for (CorNode* cP = (ifP->type == CorArray) ? ifP->value.head : ifP; cP != NULL; cP = (ifP->type == CorArray) ? cP->next : NULL)
+  {
+    char* entity = (cP->type == CorObject) ? str(cP, "entity") : NULL;
+    char* type   = (cP->type == CorObject) ? str(cP, "type")   : NULL;
+    char* q      = (cP->type == CorObject) ? str(cP, "q")      : NULL;
+
+    if (((entity == NULL) && (type == NULL)) || (q == NULL))
+    {
+      snprintf(why, whyLen, "'if' - { \"entity\" or \"type\", \"q\" }, or a list of them");
+      return false;
+    }
+    if (type == NULL)
+      type = idType(allocP, entity);
+    if (type == NULL)
+    {
+      snprintf(why, whyLen, "'if' names an entity whose id holds no type (urn:ngsi-ld:<type>:...) - give 'type' too");
+      return false;
+    }
+
+    CepCondition* condP = &ruleP->condV[ruleP->conds++];
+    condP->entity = (entity != NULL) ? corAllocStrdup(allocP, entity) : NULL;
+    condP->type   = corAllocStrdup(allocP, type);
+    condP->q      = corAllocStrdup(allocP, q);
   }
 
   return true;
@@ -682,6 +868,9 @@ CepRules* rulesLoad(void)
     if (whenExtras(&rP->alloc, json(eP, "when"), ruleP, why, sizeof(why)) == false)
       goto bad;
 
+    if (condParse(&rP->alloc, json(eP, "when"), ruleP, why, sizeof(why)) == false)
+      goto bad;
+
     CorNode* firedP = corTreeLookup(eP, "fired");
     if ((firedP != NULL) && (firedP->type == CorInt))
       ruleP->firedBase = firedP->value.i;
@@ -696,13 +885,15 @@ CepRules* rulesLoad(void)
     for (CorNode* aP = thenP->value.head; aP != NULL; aP = aP->next)
     {
       memset(&ruleP->actionV[ruleP->actions], 0, sizeof(CepAction));
-      if (actionParse(&rP->alloc, aP, &ruleP->actionV[ruleP->actions], why, sizeof(why)) == false)
+      if (actionParse(&rP->alloc, ruleP, aP, &ruleP->actionV[ruleP->actions], why, sizeof(why)) == false)
         goto bad;
       ++ruleP->actions;
     }
 
     for (int ix = 0; ix < ruleP->events; ix++)
       ruleP->eventV[ix].watch = watchOf(rP, &ruleP->eventV[ix]);
+    for (int ix = 0; ix < ruleP->untils; ix++)
+      ruleP->untilV[ix].watch = watchOf(rP, &ruleP->untilV[ix]);
     ++rP->rules;
     continue;
 

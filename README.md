@@ -8,8 +8,9 @@ through the NGSI-LD API, applied at once. The design, and what comes after this 
 It works with any NGSI-LD broker: the events come as notifications of NGSI-LD subscriptions, the actions go
 out as NGSI-LD requests.
 
-**Status: P2.2** - named events; patterns `any`, `seq`, `all`, `repeat`, `absent`, `supersedes`; `where` filters;
-`set` and `toggle` actions; rule statistics. Windows, schedules, group targets, `step` and conditions come next.
+**Status: P2.3** - named events; patterns `any`, `seq`, `all`, `repeat`, `absent`, `supersedes`; `where` filters;
+`if` conditions on other entities; `set`, `toggle` and `step` (... `until`) actions, on one entity or a group;
+rule statistics. Windows and schedules come next.
 
 ## Build
 
@@ -62,10 +63,14 @@ that failed.
 | `when.type` | without `when.entity`: every entity of the type |
 | `when.attribute` | the attribute watched: each update of it is an event - the same value again too (a button pressed twice) |
 | `when.where` | an NGSI-LD q: only updates of an entity matching it are events (`"level>50"`) - see below |
+| `when.if` | conditions on OTHER entities, asked of the broker when the rule would fire - see below |
 | `then` | the actions, run in order; one failing does not stop the others |
-| `then[].entity` | the target |
+| `then[].entity` | the target: one entity |
+| `then[].type`, `then[].q` | the target: every entity of the type (matching the q, if given) - instead of `entity` |
 | `then[].set` | `{ "<attribute>": <value>, ... }` - PATCHed as Properties |
-| `then[].toggle` | `"<attribute>"` - a boolean: read, the other value PATCHed |
+| `then[].toggle` | `"<attribute>"` - a boolean: read, the other value PATCHed - per target |
+| `then[].step` | `{ "attribute", "by", "every", "min", "max", "for" }` - a number changed `by` every `every` - see below |
+| `then[].until` | with `step`: the event that stops it |
 | `enabled` | a Property; `false`: the rule is not run |
 
 A rule that is not right is left out (the log says why); the others run.
@@ -134,6 +139,70 @@ the watched attribute: `{ "entity": "urn:ngsi-ld:Dimmer:room-2-14", "attribute":
 fires on each update of `level` that leaves it above 50. A q the broker refuses: the subscription is not made, the
 log says why (`POST subscription ...`).
 
+### Group targets
+
+An action's target is one `entity`, or a `type` with an optional `q`: every entity of the type that matches,
+found when the action runs (`GET /entities?type=...&q=...`, at most 1000) - a light added to the room is in the
+group from then on, with no change to the rule.
+
+```json
+{ "type": "Light", "q": "roomId==\"room-2-14\"", "set": { "on": true } }
+```
+
+`toggle` reads each target and writes it the other value: a group of lights half on, half off is turned the other
+way round, each on its own.
+
+### `step` ... `until`
+
+`step` changes a number by `by` every `every` - dimming while a button is held:
+
+```json
+"when": { "type": "JsonProperty", "json": {
+  "events": [
+    { "event": "hold",    "entity": "urn:ngsi-ld:Remote:room-2-14", "attribute": "hold" },
+    { "event": "release", "entity": "urn:ngsi-ld:Remote:room-2-14", "attribute": "release" }
+  ],
+  "pattern": "hold"
+}},
+"then": { "type": "JsonProperty", "json": [
+  { "entity": "urn:ngsi-ld:Light:room-2-14-desk",
+    "step": { "attribute": "level", "by": 20, "every": "PT0.2S", "max": 100 },
+    "until": "release" }
+]}
+```
+
+| `step` member | |
+|---|---|
+| `attribute` | the number changed; each target's own value is where its step starts - a target without a number is left out (logged) |
+| `by` | the change of each step, not 0; negative steps down |
+| `every` | an ISO 8601 duration, `PT0.05S` or more; the first step is at once |
+| `min`, `max` | optional bounds: the value is held to them; when every target is at a bound, the step stops |
+| `for` | an ISO 8601 duration, default `PT30S`: the step stops after it, whatever else - a lost `release` cannot run it for ever |
+
+`until` names an event of the rule's `events` that is NOT in its pattern (an event of the pattern would fire the
+rule again): when it comes, the step stops where it is. The rule firing again while its step runs starts the step
+over from the targets' values then - one step per rule, target and attribute. The log says when and why a step
+stops: `step of level stopped - at its bound`, `- its time limit`.
+
+### `if`
+
+`if` is a condition on another entity, checked when the rule would fire - "the light on only while the building is
+occupied":
+
+```json
+"when": { "type": "JsonProperty", "json": {
+  "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress",
+  "if": { "entity": "urn:ngsi-ld:Building:hq", "q": "occupied==true" }
+}}
+```
+
+`entity` or `type`, and `q`, as a target. It holds when the broker has an entity that matches (`GET
+/entities?id=...&q=...&limit=1`). A list of them: all must hold. A condition that does not hold: the rule is not
+fired, not counted, and the log says so (`'if' occupied==true does not hold - not fired`). An error asking the
+broker: taken as not holding, logged.
+
+`if` is asked of the broker, not watched: corCep keeps no copy of the other entity, and its updates are not events.
+
 ## Statistics
 
 corCep writes each rule's statistics to its Rule entity, with `POST /entities/<rule>/attrs`:
@@ -198,6 +267,10 @@ new on every run. Against another NGSI-LD broker: `CEP_BROKER_HOST=... CEP_BROKE
 | `cep_pattern_all` | two events in either order within 2 s |
 | `cep_pattern_partition` | a pattern on a type matches per entity |
 | `cep_pattern_left_out` | patterns that are not right, each with the reason |
+| `cep_target_group` | `type` + `q` sets the room's lights only; `toggle` on a group turns each light the other way |
+| `cep_action_step` | `step` while held; `until` (the release) stops it; held on, it stops at `max`; `for` stops it |
+| `cep_rule_if` | `if` not holding: not fired, logged; holding: fired |
+| `cep_action_left_out` | actions and conditions that are not right, each with the reason |
 
 The tests on patterns over time wait for events to be processed rather than sleep: a "sentinel" rule on the same
 event fires on every one, and corCep feeds every rule of an event, the patterns first, before the next event.

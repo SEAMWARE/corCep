@@ -47,10 +47,10 @@ echo
 
 echo "03. A single press - 'single' fires, 1 s after the press"
 echo "========================================================"
-t0=$(date +%s%3N)
+t0=$(msNow)
 press $SW upperPress
 firedAwait single 1 3
-waited=$(($(date +%s%3N) - t0))
+waited=$(($(msNow) - t0))
 [ $waited -ge 950 ] && echo "waited 1 s: yes" || echo "waited 1 s: NO - $waited ms"
 echo "double: $(firedCount double)"
 echo

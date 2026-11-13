@@ -1,0 +1,80 @@
+#
+# FILE            cep_rule_if.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# 'if' { entity, q }: asked of the broker (GET /entities?id=...&q=...) when the pattern matches - an entity found: it holds.
+#
+--NAME--
+if: the rule fires only while its condition holds - the broker answers it, with the q
+
+--TAGS--
+cep if
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, the building (not occupied), a rule 'if occupied', corCep started"
+echo "============================================================================================"
+SW=urn:ngsi-ld:WallSwitch:room-2-14
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"upperPress\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Building:hq", "type": "Building", "occupied": {"type": "Property", "value": false}}'
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:upper-if-occupied\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"upperPress\", \"if\": {\"entity\": \"urn:ngsi-ld:Building:hq\", \"q\": \"occupied==true\"}}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"urn:ngsi-ld:Light:room-2-14-desk\", \"set\": {\"on\": true}}]}}"
+cepStart
+subsAwait 1
+echo
+echo
+
+
+echo "02. Pressed, the building not occupied - not fired"
+echo "=================================================="
+press $SW upperPress
+cepAwaitLog "does not hold"
+echo "upper-if-occupied: $(firedCount upper-if-occupied)"
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+echo
+echo
+
+
+echo "03. The building occupied, pressed - fired, the light on"
+echo "========================================================"
+ngsildStatus PATCH /entities/urn:ngsi-ld:Building:hq/attrs '{"occupied": {"type": "Property", "value": true}}'
+press $SW upperPress
+firedAwait upper-if-occupied 1
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, the building (not occupied), a rule 'if occupied', corCep started
+============================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. Pressed, the building not occupied - not fired
+==================================================
+rule urn:ngsi-ld:Rule:upper-if-occupied: 'if' occupied==true does not hold - not fired (urn:ngsi-ld:WallSwitch:room-2-14)
+upper-if-occupied: 0
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "on": false, "type": "Light"}
+
+
+03. The building occupied, pressed - fired, the light on
+========================================================
+PATCH /entities/urn:ngsi-ld:Building:hq/attrs: 204
+upper-if-occupied: 1
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "on": true, "type": "Light"}
+
+

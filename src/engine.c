@@ -164,22 +164,80 @@ static CorNode* property(CorAlloc* allocP, const char* name, CorNode* valueP)
 
 // -----------------------------------------------------------------------------
 //
-// actionSet - PATCH /entities/<id>/attrs { <attribute>: { type: Property, value }, ... }
+// failed - the reason of a broker request that did not do what it should
 //
-static bool actionSet(CorAlloc* allocP, CepAction* aP, char* why, int whyLen)
+static void failed(char* why, int whyLen, const char* what, CepResponse* respP)
 {
-  CorNode* bodyP = corTreeObject(allocP, NULL);
-  char     path[1024];
+  snprintf(why, whyLen, "%s: %s", what, (respP->status != 0) ? ((respP->text != NULL) ? respP->text : "no body") : respP->error);
+}
 
-  for (CorNode* vP = aP->set->value.head; vP != NULL; vP = vP->next)
-    corTreeChildAdd(bodyP, property(allocP, vP->name, vP));
 
-  snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(allocP, aP->entity));
 
+// -----------------------------------------------------------------------------
+//
+// targetsGet - an action's targets, as keyValues entities: one entity (GET it, if its value is needed), or every
+// entity of a type that matches q. NULL: the broker did not answer (why says so).
+//
+static CorNode* targetsGet(CorAlloc* allocP, CepAction* aP, bool values, char* why, int whyLen)
+{
   CepResponse resp;
+  char        path[1024];
+  char        query[2048];
+
+  if (aP->entity != NULL)
+  {
+    CorNode* listP = corTreeArray(allocP, NULL);
+
+    if (values == false)
+    {
+      CorNode* eP = corTreeObject(allocP, NULL);
+      corTreeChildAdd(eP, corTreeString(allocP, "id", aP->entity));
+      corTreeChildAdd(listP, eP);
+      return listP;
+    }
+
+    snprintf(path,  sizeof(path),  "/entities/%s", urlEncode(allocP, aP->entity));
+    snprintf(query, sizeof(query), "attrs=%s&options=keyValues", urlEncode(allocP, aP->attribute));
+
+    if ((brokerRequest(allocP, CorVerbGet, path, query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL))
+    {
+      failed(why, whyLen, aP->entity, &resp);
+      return NULL;
+    }
+
+    corTreeChildAdd(listP, resp.body);
+    return listP;
+  }
+
+  snprintf(query, sizeof(query), "type=%s%s%s&options=keyValues&limit=1000", urlEncode(allocP, aP->type),
+           (aP->q != NULL) ? "&q=" : "", (aP->q != NULL) ? urlEncode(allocP, aP->q) : "");
+
+  if ((brokerRequest(allocP, CorVerbGet, "/entities", query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL) || (resp.body->type != CorArray))
+  {
+    failed(why, whyLen, "GET /entities", &resp);
+    return NULL;
+  }
+
+  return resp.body;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// attrsPatch - PATCH /entities/<id>/attrs with { <name>: <value> }, as a Property
+//
+static bool attrsPatch(CorAlloc* allocP, const char* id, CorNode* bodyP, char* why, int whyLen)
+{
+  char        path[1024];
+  CepResponse resp;
+  char        what[600];
+
+  snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(allocP, id));
   if ((brokerRequest(allocP, CorVerbPatch, path, NULL, bodyP, &resp) == false) || (resp.status != 204))
   {
-    snprintf(why, whyLen, "PATCH %s: %s", aP->entity, (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
+    snprintf(what, sizeof(what), "PATCH %s", id);
+    failed(why, whyLen, what, &resp);
     return false;
   }
 
@@ -190,42 +248,328 @@ static bool actionSet(CorAlloc* allocP, CepAction* aP, char* why, int whyLen)
 
 // -----------------------------------------------------------------------------
 //
-// actionToggle - the boolean read, the other value PATCHed
+// numberNode - a step's value as JSON: an integer when it is one
 //
-static bool actionToggle(CorAlloc* allocP, CepAction* aP, char* why, int whyLen)
+static CorNode* numberNode(CorAlloc* allocP, const char* name, double v)
 {
-  char        path[1024];
-  char        query[512];
-  CepResponse resp;
+  if ((v == (double) (long long) v) && (v > -9e15) && (v < 9e15))
+    return corTreeInteger(allocP, name, (long long) v);
+  return corTreeFloat(allocP, name, v);
+}
 
-  snprintf(path,  sizeof(path),  "/entities/%s", urlEncode(allocP, aP->entity));
-  snprintf(query, sizeof(query), "attrs=%s&options=keyValues", urlEncode(allocP, aP->attribute));
 
-  if ((brokerRequest(allocP, CorVerbGet, path, query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL))
+
+// -----------------------------------------------------------------------------
+//
+// Steppers - the steps running: a number, 'by' every 'every', until an event, a bound, or the time limit
+//
+typedef struct Stepper
+{
+  struct Stepper*  next;
+  char*            ruleId;
+  char*            key;                          // the partition (the event's entity, "" - the rule is not partitioned)
+  int              untilSub;                     // the subscription of the 'until' event (stable across reloads), -1: none
+  char*            attribute;
+  double           by, min, max;
+  bool             hasMin, hasMax;
+  long long        everyMs, nextAt, endAt;
+  int              n;
+  char**           idV;
+  double*          valueV;
+} Stepper;
+
+static Stepper* stepperList = NULL;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// stepperFree -
+//
+static void stepperFree(Stepper* sP)
+{
+  for (int ix = 0; ix < sP->n; ix++)
+    free(sP->idV[ix]);
+  free(sP->idV);
+  free(sP->valueV);
+  free(sP->ruleId);
+  free(sP->key);
+  free(sP->attribute);
+  free(sP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// StepperKey - which steppers: a rule's step of an attribute in a partition, or the steps an 'until' stops
+//
+typedef struct StepperKey
+{
+  const char*  ruleId;                           // NULL: by 'until'
+  const char*  key;
+  const char*  attribute;
+  int          untilSub;
+  const char*  entity;                           // the entity the 'until' event came from
+} StepperKey;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// steppersDrop - the steppers <kP> names stop
+//
+static void steppersDrop(const StepperKey* kP)
+{
+  Stepper** prevPP = &stepperList;
+
+  while (*prevPP != NULL)
   {
-    snprintf(why, whyLen, "GET %s: %s", aP->entity, (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
+    Stepper* sP = *prevPP;
+    bool     drop;
+
+    if (kP->ruleId != NULL)
+      drop = (strcmp(sP->ruleId, kP->ruleId) == 0) && (strcmp(sP->key, kP->key) == 0) && (strcmp(sP->attribute, kP->attribute) == 0);
+    else
+      drop = (sP->untilSub == kP->untilSub) && ((sP->key[0] == 0) || (strcmp(sP->key, kP->entity) == 0));
+
+    if (drop)
+    {
+      *prevPP = sP->next;
+      stepperFree(sP);
+    }
+    else
+      prevPP = &sP->next;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// stepperStart - a step: its targets' values now, the first step at once; one already running for the rule, the
+// partition and the attribute is replaced
+//
+static bool stepperStart(CorAlloc* allocP, CepRule* ruleP, CepAction* aP, const char* entity, char* why, int whyLen)
+{
+  CorNode* listP = targetsGet(allocP, aP, true, why, whyLen);
+  if (listP == NULL)
+    return false;
+
+  const char* key = ruleP->partitioned ? entity : "";
+
+  StepperKey same = { ruleP->id, key, aP->attribute, -1, NULL };
+  steppersDrop(&same);
+
+  Stepper* sP = calloc(1, sizeof(Stepper));
+  int      n  = 0;
+
+  for (CorNode* eP = listP->value.head; eP != NULL; eP = eP->next)
+    ++n;
+
+  if ((sP == NULL) || ((sP->idV = calloc(n + 1, sizeof(char*))) == NULL) || ((sP->valueV = calloc(n + 1, sizeof(double))) == NULL))
+  {
+    if (sP != NULL)
+    {
+      free(sP->idV);
+      free(sP);
+    }
+    snprintf(why, whyLen, "step: out of memory");
     return false;
   }
 
-  CorNode* vP = corTreeLookup(resp.body, aP->attribute);
-  if ((vP == NULL) || (vP->type != CorBoolean))
+  for (CorNode* eP = listP->value.head; eP != NULL; eP = eP->next)
   {
-    snprintf(why, whyLen, "toggle %s: %s is not a boolean", aP->entity, aP->attribute);
-    return false;
+    CorNode* idP = corTreeLookup(eP, "id");
+    CorNode* vP  = corTreeLookup(eP, aP->attribute);
+
+    if ((idP == NULL) || (idP->type != CorString))
+      continue;
+    if ((vP == NULL) || ((vP->type != CorInt) && (vP->type != CorFloat)))
+    {
+      logLine("rule %s: step - %s has no number '%s', left out", ruleP->id, idP->value.s, aP->attribute);
+      continue;
+    }
+
+    sP->idV[sP->n]    = strdup(idP->value.s);
+    sP->valueV[sP->n] = (vP->type == CorInt) ? (double) vP->value.i : vP->value.f;
+    ++sP->n;
   }
 
-  CorNode* nowP  = corTreeBoolean(allocP, aP->attribute, !vP->value.b);
-  CorNode* bodyP = corTreeObject(allocP, NULL);
-  corTreeChildAdd(bodyP, property(allocP, aP->attribute, nowP));
+  long long now = nowMs();
 
-  snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(allocP, aP->entity));
-  if ((brokerRequest(allocP, CorVerbPatch, path, NULL, bodyP, &resp) == false) || (resp.status != 204))
-  {
-    snprintf(why, whyLen, "PATCH %s: %s", aP->entity, (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
-    return false;
-  }
+  sP->ruleId    = strdup(ruleP->id);
+  sP->key       = strdup(key);
+  sP->untilSub  = ((aP->until >= 0) && (rules != NULL)) ? rules->watchV[ruleP->untilV[aP->until].watch].sub : -1;
+  sP->attribute = strdup(aP->attribute);
+  sP->by        = aP->by;
+  sP->min       = aP->min;
+  sP->max       = aP->max;
+  sP->hasMin    = aP->hasMin;
+  sP->hasMax    = aP->hasMax;
+  sP->everyMs   = aP->everyMs;
+  sP->nextAt    = now;
+  sP->endAt     = now + aP->forMs;
+  sP->next      = stepperList;
+  stepperList   = sP;
 
   return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// steppersRun - the steps due; returns the next one's time, 0: none
+//
+static long long steppersRun(CorAlloc* allocP, long long now)
+{
+  long long next   = 0;
+  Stepper** prevPP = &stepperList;
+
+  while (*prevPP != NULL)
+  {
+    Stepper* sP   = *prevPP;
+    bool     done = false;
+
+    if (now >= sP->endAt)
+    {
+      logLine("rule %s: step of %s stopped - its time limit", sP->ruleId, sP->attribute);
+      done = true;
+    }
+    else if (now >= sP->nextAt)
+    {
+      int atBound = 0;
+
+      for (int ix = 0; ix < sP->n; ix++)
+      {
+        double v = sP->valueV[ix] + sP->by;
+
+        if (sP->hasMax && (v >= sP->max)) { v = sP->max; ++atBound; }
+        if (sP->hasMin && (v <= sP->min)) { v = sP->min; ++atBound; }
+
+        if (v != sP->valueV[ix])
+        {
+          CorNode* bodyP = corTreeObject(allocP, NULL);
+          CorNode* pP    = corTreeObject(allocP, sP->attribute);
+          char     why[512];
+
+          corTreeChildAdd(pP, corTreeString(allocP, "type", "Property"));
+          corTreeChildAdd(pP, numberNode(allocP, "value", v));
+          corTreeChildAdd(bodyP, pP);
+          if (attrsPatch(allocP, sP->idV[ix], bodyP, why, sizeof(why)) == false)
+            logLine("rule %s: step - %s", sP->ruleId, why);
+          sP->valueV[ix] = v;
+        }
+      }
+
+      sP->nextAt += sP->everyMs;
+      if (sP->nextAt <= now)
+        sP->nextAt = now + sP->everyMs;
+
+      if (atBound == sP->n)
+      {
+        logLine("rule %s: step of %s stopped - %s", sP->ruleId, sP->attribute, (sP->n == 0) ? "no target" : "at its bound");
+        done = true;
+      }
+    }
+
+    if (done)
+    {
+      *prevPP = sP->next;
+      stepperFree(sP);
+      continue;
+    }
+
+    if ((next == 0) || (sP->nextAt < next))
+      next = sP->nextAt;
+    if (sP->endAt < next)
+      next = sP->endAt;
+    prevPP = &sP->next;
+  }
+
+  return next;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// actionRun - one action on each of its targets; false: one target or more failed (why: the first reason)
+//
+static bool actionRun(CorAlloc* allocP, CepRule* ruleP, CepAction* aP, const char* entity, char* why, int whyLen)
+{
+  if (aP->kind == CepActionStep)
+    return stepperStart(allocP, ruleP, aP, entity, why, whyLen);
+
+  CorNode* listP = targetsGet(allocP, aP, aP->kind == CepActionToggle, why, whyLen);
+  if (listP == NULL)
+    return false;
+
+  bool ok = true;
+
+  for (CorNode* eP = listP->value.head; eP != NULL; eP = eP->next)
+  {
+    CorNode* idP   = corTreeLookup(eP, "id");
+    CorNode* bodyP = corTreeObject(allocP, NULL);
+    char     why2[512];
+
+    if ((idP == NULL) || (idP->type != CorString))
+      continue;
+
+    if (aP->kind == CepActionSet)
+    {
+      for (CorNode* vP = aP->set->value.head; vP != NULL; vP = vP->next)
+        corTreeChildAdd(bodyP, property(allocP, vP->name, vP));
+    }
+    else
+    {
+      CorNode* vP = corTreeLookup(eP, aP->attribute);
+      if ((vP == NULL) || (vP->type != CorBoolean))
+      {
+        if (ok)
+          snprintf(why, whyLen, "toggle %s: %s is not a boolean", idP->value.s, aP->attribute);
+        ok = false;
+        continue;
+      }
+      corTreeChildAdd(bodyP, property(allocP, aP->attribute, corTreeBoolean(allocP, aP->attribute, !vP->value.b)));
+    }
+
+    if (attrsPatch(allocP, idP->value.s, bodyP, why2, sizeof(why2)) == false)
+    {
+      if (ok)
+        snprintf(why, whyLen, "%s", why2);
+      ok = false;
+    }
+  }
+
+  return ok;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// condHolds - an 'if': does the broker have an entity that matches? Asked when the rule is about to fire: the
+// broker evaluates the q, corCep keeps no copy of the entities
+//
+static bool condHolds(CorAlloc* allocP, CepRule* ruleP, CepCondition* cP)
+{
+  char        query[2048];
+  CepResponse resp;
+
+  snprintf(query, sizeof(query), "type=%s%s%s&q=%s&options=keyValues&limit=1", urlEncode(allocP, cP->type),
+           (cP->entity != NULL) ? "&id=" : "", (cP->entity != NULL) ? urlEncode(allocP, cP->entity) : "", urlEncode(allocP, cP->q));
+
+  if ((brokerRequest(allocP, CorVerbGet, "/entities", query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL) || (resp.body->type != CorArray))
+  {
+    char why[512];
+    failed(why, sizeof(why), "GET /entities", &resp);
+    logLine("rule %s: 'if' %s - not known, taken as false: %s", ruleP->id, cP->q, why);
+    return false;
+  }
+
+  return resp.body->value.head != NULL;
 }
 
 
@@ -355,19 +699,28 @@ static void statsFlush(CorAlloc* allocP)
 //
 static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
 {
-  int    failed = 0;
-  Stats* sP     = statsOf(ruleP);
+  int    nFailed = 0;
+  Stats* sP      = statsOf(ruleP);
+
+  for (int ix = 0; ix < ruleP->conds; ix++)
+  {
+    if (condHolds(allocP, ruleP, &ruleP->condV[ix]) == false)
+    {
+      logLine("rule %s: 'if' %s does not hold - not fired (%s)", ruleP->id, ruleP->condV[ix].q, entity);
+      return;
+    }
+  }
 
   for (int ix = 0; ix < ruleP->actions; ix++)
   {
     CepAction* aP       = &ruleP->actionV[ix];
     char       why[512] = { 0 };
-    bool       ok       = (aP->kind == CepActionSet) ? actionSet(allocP, aP, why, sizeof(why)) : actionToggle(allocP, aP, why, sizeof(why));
+    bool       ok       = actionRun(allocP, ruleP, aP, entity, why, sizeof(why));
 
     if (ok == false)
     {
       logLine("rule %s: action %d - %s", ruleP->id, ix + 1, why);
-      ++failed;
+      ++nFailed;
 
       if (sP != NULL)
       {
@@ -384,7 +737,7 @@ static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
     sP->dirty = true;
   }
 
-  logLine("rule %s fired (%s)%s", ruleP->id, entity, (failed > 0) ? " - an action failed" : "");
+  logLine("rule %s fired (%s)%s", ruleP->id, entity, (nFailed > 0) ? " - an action failed" : "");
 }
 
 
@@ -438,6 +791,11 @@ static void eventHandle(CorAlloc* allocP, int sub, char* body)
     if ((idP == NULL) || (idP->type != CorString) || (corTreeLookup(eP, wP->attribute) == NULL))
       continue;
 
+    if (rules->watchV[n].sub >= 0)                                          // an 'until' event stops its steps
+    {
+      StepperKey until = { NULL, NULL, NULL, rules->watchV[n].sub, idP->value.s };
+      steppersDrop(&until);
+    }
     patternsEvent(rules, n, idP->value.s, nowMs(), fireCb, allocP);
   }
 }
@@ -458,6 +816,24 @@ static void rulesReload(void)
   rulesFree(rules);
   rules = newP;
   patternsAdopt(rules, nowMs());
+
+  Stepper** stepPP = &stepperList;                     // the steps of rules gone stop
+  while (*stepPP != NULL)
+  {
+    Stepper* tP    = *stepPP;
+    bool     found = false;
+
+    for (int ix = 0; (ix < rules->rules) && (found == false); ix++)
+      found = (strcmp(rules->ruleV[ix].id, tP->ruleId) == 0);
+
+    if (found)
+      stepPP = &tP->next;
+    else
+    {
+      *stepPP = tP->next;
+      stepperFree(tP);
+    }
+  }
 
   //
   // The statistics of the rules running; those of a rule gone (deleted, disabled, left out) are dropped
@@ -508,6 +884,10 @@ void engineRun(void)
     //
     long long now  = nowMs();
     long long next = patternsTimers(rules, now, fireCb, &alloc);
+    long long step = steppersRun(&alloc, nowMs());
+
+    if ((step != 0) && ((next == 0) || (step < next)))
+      next = step;
     long long wait = ((next != 0) && (next - now < 1000)) ? next - now : 1000;
 
     statsFlush(&alloc);
