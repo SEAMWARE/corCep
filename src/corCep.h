@@ -53,6 +53,7 @@ typedef struct CepResponse
 
 extern bool  brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP);
 extern char* urlEncode(CorAlloc* allocP, const char* s);
+extern bool  nonexistentTenant(CepResponse* respP);
 
 
 

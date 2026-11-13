@@ -15,6 +15,7 @@
 #include "corAlloc/corAllocBufferInit.h"         // corAllocBufferInit
 #include "corAlloc/corAllocBufferReset.h"        // corAllocBufferReset
 #include "corAlloc/corAllocStrdup.h"             // corAllocStrdup
+#include "corTree/corTreeBuilder.h"              // corTreeArray
 #include "corTree/corTreeLookup.h"               // corTreeLookup
 
 #include "corCep.h"
@@ -211,7 +212,18 @@ CepRules* rulesLoad(void)
   corAllocBufferInit(&rP->alloc, NULL, 0, 256 * 1024, NULL, "corCep rules");
 
   CepResponse resp;
-  if ((brokerRequest(&rP->alloc, CorVerbGet, "/entities", "type=Rule&options=keyValues&limit=1000", NULL, &resp) == false) || (resp.status != 200))
+  bool got = brokerRequest(&rP->alloc, CorVerbGet, "/entities", "type=Rule&options=keyValues&limit=1000", NULL, &resp);
+
+  if (got && nonexistentTenant(&resp))
+  {
+    //
+    // A tenant with nothing in it yet: no rules. corCep's own Rule subscription makes the tenant (a POST
+    // /subscriptions creates it), but a broker may not - zero rules either way, and the first Rule made is notified.
+    //
+    resp.status = 200;
+    resp.body   = corTreeArray(&rP->alloc, NULL);
+  }
+  else if ((got == false) || (resp.status != 200))
   {
     logLine("the rules: GET /entities?type=Rule - %s", (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
     rulesFree(rP);

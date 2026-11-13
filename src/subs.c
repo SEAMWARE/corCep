@@ -136,7 +136,11 @@ bool subsInit(void)
 
   corAllocBufferInit(&alloc, NULL, 0, 64 * 1024, NULL, "corCep subsInit");
 
-  if ((brokerRequest(&alloc, CorVerbGet, "/subscriptions", "limit=1000", NULL, &resp) == false) || (resp.status != 200))
+  bool got = brokerRequest(&alloc, CorVerbGet, "/subscriptions", "limit=1000", NULL, &resp);
+
+  if (got && nonexistentTenant(&resp))
+    resp.body = NULL;                            // a tenant with nothing in it yet: no subscriptions to remove
+  else if ((got == false) || (resp.status != 200))
   {
     logLine("GET /subscriptions: %s", (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
     corAllocBufferReset(&alloc, false);
