@@ -1,0 +1,80 @@
+#
+# Build corCep against the cor stack and run its functional tests against a coraine container.
+#
+# Two containers on the runner's network, as `make functest` does on a workstation:
+#   - the broker: a released coraine image (test/funcTests/broker.sh - ramDB, the tests isolate by tenant)
+#   - the build and the tests: the cor stack's CI base image (the one coraine's own CI uses), the repos as
+#     SIBLINGS under stack/ - corLibs' bootstrap.sh clones and builds the cor libs beside corCep
+# Host networking: the broker notifies corCep on 127.0.0.1, as on a workstation.
+#
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    env:
+      #
+      # Pinned, as in coraine's ci.yml: a red run is then a change in this repo, not in an image.
+      #
+      CI_IMAGE: quay.io/seamware/coraine-ci:2026-10-30-717882e
+      CEP_BROKER_IMAGE: quay.io/seamware/coraine:0.7.0
+
+    steps:
+      - name: Check out corCep
+        uses: actions/checkout@v4
+        with:
+          path: stack/corCep
+
+      - name: Check out corLibs
+        uses: actions/checkout@v4
+        with:
+          repository: SEAMWARE/corLibs
+          path: stack/corLibs
+
+      - name: Start the broker
+        run: stack/corCep/test/funcTests/broker.sh up
+
+      #
+      # Release first (-O2 finds what -O0 does not), then the debug build the tests run on.
+      # corTest sorts JSON bodies with the corJson tool and refuses to run without it - built by bootstrap.sh,
+      # not on PATH in the image.
+      #
+      - name: Build the cor libs and corCep, run the functional tests
+        run: |
+          docker run --rm --network host \
+            -v "$GITHUB_WORKSPACE/stack:/stack" -w /stack/corCep \
+            -e CORJSON=/stack/corJson/bin/corJson \
+            -e CEP_TEST_DIR=/stack/functest \
+            "$CI_IMAGE" bash -c '
+              set -e
+              (cd ../corLibs && ./bootstrap.sh)
+              make BUILD=release
+              make clean
+              make BUILD=debug
+              ../corLibs/bin/corTest --noColor'
+
+      - name: Stop the broker
+        if: always()
+        run: stack/corCep/test/funcTests/broker.sh down
+
+      - name: Keep what a failing test left
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: functests
+          path: |
+            stack/corCep/test/funcTests/cases/*.out
+            stack/corCep/test/funcTests/cases/*.diff
+            stack/corCep/test/funcTests/cases/*.stderr
+            stack/functest/

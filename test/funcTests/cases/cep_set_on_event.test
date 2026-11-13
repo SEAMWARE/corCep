@@ -1,0 +1,128 @@
+#
+# FILE            cep_set_on_event.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# The simplest rule: an update of one attribute of one entity sets an attribute of another.
+#
+#   - the rule is a Rule entity, made BEFORE corCep starts: read at start
+#   - corCep's subscriptions: corcep-rules (every Rule) and corcep-0 (the switch's upperPress)
+#   - the switch's upperPress updated: the light's 'on' set to true, as a Property
+#
+--NAME--
+A rule read at start: a wall switch's upperPress sets a light on
+
+--TAGS--
+cep set
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, the rule"
+echo "==================================="
+ngsild POST /entities '{"id": "urn:ngsi-ld:WallSwitch:room-2-14", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}}'
+ngsild POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}}'
+ngsild POST /entities '{
+  "id": "urn:ngsi-ld:Rule:room-2-14-upper",
+  "type": "Rule",
+  "name": {"type": "Property", "value": "room 2.14: upper button - light on"},
+  "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"on": true}}]}
+}'
+echo
+echo
+
+
+echo "02. corCep started - one rule, one subscription for it"
+echo "======================================================"
+cepStart
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+echo
+echo
+
+
+echo "03. corCep's subscriptions in the broker"
+echo "========================================"
+curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/subscriptions" | grep -o '"urn:ngsi-ld:Subscription:corcep-[^"]*"' | sort
+echo
+echo
+
+
+echo "04. The upper button pressed - the light on"
+echo "==========================================="
+ngsild PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"upperPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Light:room-2-14-desk on true
+ngsild GET /entities/urn:ngsi-ld:Light:room-2-14-desk
+cepAwaitLog "fired"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, the rule
+===================================
+HTTP/1.1 201 Created
+Date: REGEX([A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT)
+NGSILD-Tenant: REGEX(cep\d+)
+Location: /ngsi-ld/v1/entities/urn:ngsi-ld:WallSwitch:room-2-14
+Content-Length: 0
+
+
+HTTP/1.1 201 Created
+Date: REGEX([A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT)
+NGSILD-Tenant: REGEX(cep\d+)
+Location: /ngsi-ld/v1/entities/urn:ngsi-ld:Light:room-2-14-desk
+Content-Length: 0
+
+
+HTTP/1.1 201 Created
+Date: REGEX([A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT)
+NGSILD-Tenant: REGEX(cep\d+)
+Location: /ngsi-ld/v1/entities/urn:ngsi-ld:Rule:room-2-14-upper
+Content-Length: 0
+
+
+
+
+02. corCep started - one rule, one subscription for it
+======================================================
+1 rule, 1 subscription
+
+
+03. corCep's subscriptions in the broker
+========================================
+"urn:ngsi-ld:Subscription:corcep-0"
+"urn:ngsi-ld:Subscription:corcep-rules"
+
+
+04. The upper button pressed - the light on
+===========================================
+HTTP/1.1 204 No Content
+Date: REGEX([A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT)
+NGSILD-Tenant: REGEX(cep\d+)
+
+
+HTTP/1.1 200 OK
+Date: REGEX([A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT)
+Content-Type: application/json
+NGSILD-Tenant: REGEX(cep\d+)
+Link: <https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context-v1.9.jsonld>; rel="http://www.w3.org/ns/json-ld#context"; type="application/ld+json"
+Content-Length: 94
+
+{
+  "id": "urn:ngsi-ld:Light:room-2-14-desk",
+  "on": {
+    "type": "Property",
+    "value": true
+  },
+  "type": "Light"
+}
+
+rule urn:ngsi-ld:Rule:room-2-14-upper fired (urn:ngsi-ld:WallSwitch:room-2-14)
+
+
