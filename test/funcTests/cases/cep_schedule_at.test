@@ -1,0 +1,123 @@
+#
+# FILE            cep_schedule_at.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# 'soon': at now + 3 s - fired then, its next tomorrow. 'dusk' / 'dusk-30': sunset in Madrid, and 30 min before. The
+# Rule's location PATCHed to Sydney: the rule read again (corCep watches 'location'), its next sunset Sydney's.
+#
+--NAME--
+at: a clock time fires once, on time, then tomorrow; sunset at the Rule's location, an offset; another location - another sunset
+
+--TAGS--
+cep schedule at
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. Three 'at' rules, corCep started"
+echo "===================================="
+then='{"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:mark", "set": {"mark": 1}}]}'
+madrid='"location": {"type": "GeoProperty", "value": {"type": "Point", "coordinates": [-3.7038, 40.4168]}}'
+soon=$(python3 -I -c 'import datetime; print((datetime.datetime.now() + datetime.timedelta(seconds=3)).strftime("%H:%M:%S"))')
+echo "$soon" > "$CEP_TEST_DIR/soon"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:mark", "type": "Light", "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:soon\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": {\"pattern\": {\"at\": \"$soon\"}}}, \"then\": $then}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:dusk\", \"type\": \"Rule\", $madrid, \"when\": {\"type\": \"JsonProperty\", \"json\": {\"pattern\": {\"at\": \"sunset\"}}}, \"then\": $then}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:dusk-30\", \"type\": \"Rule\", $madrid, \"when\": {\"type\": \"JsonProperty\", \"json\": {\"pattern\": {\"at\": \"sunset\", \"offset\": \"-PT30M\"}}}, \"then\": $then}"
+cepStart
+echo
+echo
+
+
+echo "02. soon - fired once, at its time; its next: tomorrow, the same time"
+echo "====================================================================="
+firedAwait soon 1 6
+sleep 0.5
+echo "soon, 0.5 s later: $(firedCount soon)"
+python3 -I - "$CEP_TEST_DIR/corCep.log" "$(cat "$CEP_TEST_DIR/soon")" <<'PY'
+import sys, datetime
+log, soon = open(sys.argv[1]).read().splitlines(), sys.argv[2]
+fired = [l for l in log if "Rule:soon fired" in l][0]
+at = fired.split()[1]                                  # HH:MM:SS.mmm
+print("fired at its time (within 0.3 s):", at[:8] == soon and int(at[9:12]) < 300)
+nexts = [l.split(": next ")[1] for l in log if "Rule:soon: next" in l]
+tomorrow = datetime.datetime.strptime(nexts[-1], "%Y-%m-%d %H:%M:%S %z")
+first = datetime.datetime.strptime(nexts[0], "%Y-%m-%d %H:%M:%S %z")
+print("then next - tomorrow, the same time:", len(nexts) == 2 and tomorrow.strftime("%H:%M:%S") == soon and tomorrow - first > datetime.timedelta(hours=23))
+PY
+echo
+echo
+
+
+echo "03. dusk, dusk-30 - Madrid's next sunset (16:30-20:15 UTC, within a day), and 30 min before it"
+echo "=============================================================================================="
+python3 -I - "$CEP_TEST_DIR/corCep.log" <<'PY'
+import sys, datetime
+log = open(sys.argv[1]).read().splitlines()
+def nxt(rule):
+    return datetime.datetime.strptime([l for l in log if "Rule:%s: next" % rule in l][-1].split(": next ")[1], "%Y-%m-%d %H:%M:%S %z")
+now  = datetime.datetime.now(datetime.timezone.utc)
+dusk = nxt("dusk").astimezone(datetime.timezone.utc)
+d30  = nxt("dusk-30").astimezone(datetime.timezone.utc)
+print("dusk ahead, within a day:", now < dusk < now + datetime.timedelta(hours=24, minutes=2))
+print("dusk 16:30-20:15 UTC:", datetime.time(16, 30) <= dusk.time() <= datetime.time(20, 15))
+gap = (dusk - d30).total_seconds()
+print("dusk-30 30 min before (or tomorrow's, if today's is gone):", abs(gap - 1800) < 5 or abs(gap - (1800 - 86400)) < 300)
+PY
+echo
+echo
+
+
+echo "04. dusk's location PATCHed to Sydney - read again; its next sunset Sydney's (06:30-09:30 UTC)"
+echo "=============================================================================================="
+ngsildStatus PATCH /entities/urn:ngsi-ld:Rule:dusk/attrs '{"location": {"type": "GeoProperty", "value": {"type": "Point", "coordinates": [151.2093, -33.8688]}}}'
+cepAwaitLog "3 rules, 0 subscriptions" > /dev/null
+for ((i = 0; i < 30; i++)); do [ "$(grep -c 'Rule:dusk: next' "$CEP_TEST_DIR/corCep.log")" -ge 2 ] && break; sleep 0.1; done
+python3 -I - "$CEP_TEST_DIR/corCep.log" <<'PY'
+import sys, datetime
+log = open(sys.argv[1]).read().splitlines()
+nexts = [datetime.datetime.strptime(l.split(": next ")[1], "%Y-%m-%d %H:%M:%S %z").astimezone(datetime.timezone.utc) for l in log if "Rule:dusk: next" in l]
+print("read again, a new next:", len(nexts) == 2)
+print("Sydney's sunset, 06:30-09:30 UTC:", datetime.time(6, 30) <= nexts[-1].time() <= datetime.time(9, 30))
+PY
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. Three 'at' rules, corCep started
+====================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. soon - fired once, at its time; its next: tomorrow, the same time
+=====================================================================
+soon: 1
+soon, 0.5 s later: 1
+fired at its time (within 0.3 s): True
+then next - tomorrow, the same time: True
+
+
+03. dusk, dusk-30 - Madrid's next sunset (16:30-20:15 UTC, within a day), and 30 min before it
+==============================================================================================
+dusk ahead, within a day: True
+dusk 16:30-20:15 UTC: True
+dusk-30 30 min before (or tomorrow's, if today's is gone): True
+
+
+04. dusk's location PATCHed to Sydney - read again; its next sunset Sydney's (06:30-09:30 UTC)
+==============================================================================================
+PATCH /entities/urn:ngsi-ld:Rule:dusk/attrs: 204
+read again, a new next: True
+Sydney's sunset, 06:30-09:30 UTC: True
+
+

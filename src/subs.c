@@ -98,6 +98,7 @@ static bool subCreate(CorAlloc* allocP, const char* id, const char* entity, cons
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "then"));
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "enabled"));
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "name"));
+    corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "location"));         // sunrise / sunset: the rule's place
     corTreeChildAdd(subP, watchedP);
 
     CorNode* triggersP = corTreeArray(allocP, "notificationTrigger");

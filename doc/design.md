@@ -4,8 +4,9 @@ An NGSI-LD complex event processor: it watches entities in an NGSI-LD broker, re
 a sequence, an absence, a value over a window) and acts on entities. Written in C on the cor-libs. Works with any
 NGSI-LD broker; with coraine it can also run inside the broker.
 
-Status: P1 and P2.1 to P2.4 built (README.md) - events, `where`, the patterns any / seq / all / repeat / absent /
-window, `supersedes`, `if`, set / toggle / step ... until on one entity or a group, statistics. Section 8 lists the decisions this note needs.
+Status: P1 and P2.1 to P2.5 built (README.md) - events, `where`, the patterns any / seq / all / repeat / absent /
+window, the schedules cron / at, `supersedes`, `if`, set / toggle / step ... until on one entity or a group,
+statistics. Section 8 lists the decisions this note needs.
 
 ## 1. What it is for
 
@@ -107,7 +108,7 @@ ISO/IEC 9075-2:2016) - sequence, alternatives, quantifiers - in JSON:
 | `{ "repeat": "press", "min": 3, "within": "PT2S" }` | three presses within 2 s |
 | `{ "absent": "motion", "for": "PT10M" }` | no motion event for 10 min (a timer, restarted by each event) |
 | `{ "window": "temp", "for": "PT1H", "avg": { "gt": 26 } }` | the mean over the last hour above 26 (also `min`, `max`, `sum`, `count`) |
-| `{ "at": "sunset" }` / `{ "cron": "0 7 * * 1-5" }` | a schedule (sunset from the site's location) |
+| `{ "at": "sunset" }` / `{ "cron": "0 7 * * 1-5" }` | a schedule (sunset at the Rule entity's `location`; the host's local time) - built in P2.5 |
 
 Durations are ISO 8601 (as NGSI-LD's own). A `seq` that finishes also cancels the shorter rules it overlaps,
 when the rule says so (`"supersedes": ["urn:ngsi-ld:Rule:room-2-14-press"]`): a double press does not also fire

@@ -1,0 +1,89 @@
+#
+# FILE            cep_schedule_cron.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# 'tick': */2 * * * * * - fired at even seconds, 2 s apart. 'weekdays': 0 7 * * 1-5 - its next time, logged at start,
+# compared with Python's count of the next weekday 07:00 (the host's local time).
+#
+--NAME--
+cron: six fields fire every 2 s on the second; five fields - the next weekday 07:00, as Python counts it
+
+--TAGS--
+cep schedule cron
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. Two cron rules, no events; corCep started"
+echo "============================================="
+then='{"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:mark", "set": {"mark": 1}}]}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:mark", "type": "Light", "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:tick\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": {\"pattern\": {\"cron\": \"*/2 * * * * *\"}}}, \"then\": $then}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:weekdays\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": {\"pattern\": {\"cron\": \"0 7 * * 1-5\"}}}, \"then\": $then}"
+cepStart
+echo
+echo
+
+
+echo "02. tick - fired twice: at even seconds, on the second, 2 s apart"
+echo "================================================================="
+firedAwait tick 2 6
+grep "Rule:tick fired" "$CEP_TEST_DIR/corCep.log" | head -2 | python3 -I -c '
+import sys
+t = []
+for line in sys.stdin:
+    hms = line.split()[1]                          # HH:MM:SS.mmm
+    h, m, s = hms.split(":")
+    t.append(int(h) * 3600000 + int(m) * 60000 + round(float(s) * 1000))
+print("even seconds:", all((x // 1000) % 2 == 0 for x in t))
+print("on the second (within 0.3 s):", all(x % 1000 < 300 for x in t))
+print("2 s apart:", 1900 <= (t[1] - t[0]) % 86400000 <= 2100)
+'
+echo
+echo
+
+
+echo "03. weekdays - the next weekday 07:00, as Python counts it"
+echo "=========================================================="
+logged=$(grep -o "Rule:weekdays: next .*" "$CEP_TEST_DIR/corCep.log" | head -1 | sed 's/.*: next //')
+expected=$(python3 -I -c '
+import datetime
+now = datetime.datetime.now().astimezone()
+d = now.replace(hour=7, minute=0, second=0, microsecond=0)
+while d <= now or d.weekday() > 4:
+    d = (d + datetime.timedelta(days=1)).replace(hour=7)
+d = d.replace(tzinfo=None).astimezone()           # the offset of THAT day (daylight saving)
+print(d.strftime("%Y-%m-%d %H:%M:%S %z"))
+')
+[ "$logged" == "$expected" ] && echo "next weekday 07:00: as Python counts it" || echo "next weekday 07:00: corCep '$logged', Python '$expected'"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. Two cron rules, no events; corCep started
+=============================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. tick - fired twice: at even seconds, on the second, 2 s apart
+=================================================================
+tick: 2
+even seconds: True
+on the second (within 0.3 s): True
+2 s apart: True
+
+
+03. weekdays - the next weekday 07:00, as Python counts it
+==========================================================
+next weekday 07:00: as Python counts it
+
+
