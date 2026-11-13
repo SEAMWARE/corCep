@@ -7,7 +7,8 @@
 # corCep - an NGSI-LD complex event processor
 #
 #   make                 the corCep binary (in this directory)
-#   make test            build, and run the tests against a broker (BROKER_URL, default http://127.0.0.1:1026)
+#   make functest        build, and run the functional tests (corTest) against a coraine container it starts
+#   make test            build, and run test/check.py against a running broker (BROKER_URL, default http://127.0.0.1:1026)
 #   make install         $(PREFIX)/bin/corCep (PREFIX=/usr/local; DESTDIR for packaging)
 #   make uninstall
 #   make clean
@@ -65,6 +66,21 @@ $(COR_ARCHIVES):
 test: corCep
 	test/run.sh
 
+#
+# functest - test/funcTests/cases/*.test, run by corTest (the cor stack's test runner: corLibs/bin, or
+# CORTEST=<path>), against ONE broker for the run - a coraine container on the host's network that
+# test/funcTests/broker.sh starts and, whatever the result, stops. The tests isolate themselves by tenant.
+# CORTEST_ARGS for corTest's own options (a single test, --tags, -v).
+#
+# Against a broker of your own instead: CEP_BROKER_HOST=... CEP_BROKER_PORT=... corTest
+#
+CORTEST      ?= corTest
+CORTEST_ARGS ?=
+
+functest: corCep
+	test/funcTests/broker.sh up
+	$(CORTEST) $(CORTEST_ARGS); rc=$$?; test/funcTests/broker.sh down; exit $$rc
+
 install: corCep
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 755 corCep $(DESTDIR)$(PREFIX)/bin/corCep
@@ -75,6 +91,6 @@ uninstall:
 clean:
 	rm -rf obj corCep
 
-.PHONY: all test install uninstall clean
+.PHONY: all test functest install uninstall clean
 
 -include $(DEPS)

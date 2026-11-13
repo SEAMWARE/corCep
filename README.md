@@ -81,9 +81,18 @@ A rule that is not right is left out (the log says why); the others run.
 ## Test
 
 ```
-BROKER_URL=http://127.0.0.1:1026 make test
+make functest
 ```
 
-Against a running broker: corCep started by the test, the entities and rules made with ids of the run and
-deleted at the end. Set, toggle (the same value twice), a rule made while running, a bad rule beside good
-ones, a disabled rule, a rule deleted, a notification without the secret.
+The functional tests, `test/funcTests/cases/*.test`, run by corTest (the cor stack's test runner). `make functest`
+starts a broker for the run - a coraine container (`quay.io/seamware/coraine:0.7.0`, ramDB) on the host's
+network, port 4062 - and stops it at the end. Each test starts its own corCep and works in a tenant of its own,
+new on every run. Against another NGSI-LD broker: `CEP_BROKER_HOST=... CEP_BROKER_PORT=... corTest`.
+
+`make test` runs the older checks (`test/check.py`) against a broker already running (`BROKER_URL`, default
+`http://127.0.0.1:1026`): set, toggle (the same value twice), a rule made while running, a bad rule beside good
+ones, a disabled rule, a rule deleted, a notification without the secret. They move to corTest test cases one by
+one.
+
+CI (`.github/workflows/ci.yml`) builds corCep against the cor libs' main and runs the functional tests on every
+pull request.

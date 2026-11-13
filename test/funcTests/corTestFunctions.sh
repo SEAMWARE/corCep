@@ -1,0 +1,144 @@
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# corTestFunctions.sh - the verbs corCep's functional tests use; corTest sources it into every section
+#
+# The broker is a fixture, not the thing under test: ONE broker for the whole run (test/funcTests/broker.sh,
+# `make functest` starts and stops it), any NGSI-LD broker. Each test isolates itself with a TENANT of its
+# own, new on every run - nothing a test makes can be seen by another test, or by the same test's next run.
+# corCep is started by each test, on a port of its own.
+#
+# corTest runs --INIT--, --RUN-- and --TEARDOWN-- as separate processes: what one section makes for the
+# next (the tenant, corCep's pid) is kept in files under $CEP_TEST_DIR.
+#
+#   CEP_BROKER_HOST   the broker's host     (default 127.0.0.1)
+#   CEP_BROKER_PORT   the broker's port     (default 4062 - clear of corTest's 1026-1035 and demo brokers on 4040)
+#   CEP_PORT          corCep's notification port (default 7620)
+#   CEP_BIN           the corCep binary     (default: corCep in this repo)
+#   CEP_TEST_DIR      scratch: the tenant, corCep's pid and log (default /tmp/corcep-functest)
+#
+CEP_BROKER_HOST="${CEP_BROKER_HOST:-127.0.0.1}"
+CEP_BROKER_PORT="${CEP_BROKER_PORT:-4062}"
+CEP_PORT="${CEP_PORT:-7620}"
+CEP_BIN="${CEP_BIN:-${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}/corCep}"
+CEP_TEST_DIR="${CEP_TEST_DIR:-/tmp/corcep-functest}"
+
+
+# -----------------------------------------------------------------------------
+#
+# cepTestInit - the test's scratch directory, emptied, and a new tenant for it (--INIT--)
+#
+cepTestInit() {
+  cepStop
+  rm -rf "${CEP_TEST_DIR:?}"
+  mkdir -p "$CEP_TEST_DIR"
+  echo "cep$(date +%s%N | tail -c 10)$$" > "$CEP_TEST_DIR/tenant"
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# cepTenant - the test's tenant
+#
+cepTenant() {
+  cat "$CEP_TEST_DIR/tenant"
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# ngsild <method> <path> [payload] - an NGSI-LD request to the broker, in the test's tenant
+#
+# Prints what corCurl prints: the status line, the headers, the body (JSON members sorted).
+#
+ngsild() {
+  local method="$1" path="$2" payload="$3"
+  local -a args=(--host "$CEP_BROKER_HOST" --port "$CEP_BROKER_PORT" -X "$method" --url "/ngsi-ld/v1$path" -H "NGSILD-Tenant: $(cepTenant)")
+
+  [ -z "$payload" ] || args+=(--payload "$payload")
+  corCurl "${args[@]}"
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# cepStart [options...] - corCep against the broker, in the test's tenant; returns once its first rules are read
+#
+# The log (stderr) goes to $CEP_TEST_DIR/corCep.log - a test waits on it with cepAwaitLog, and it is kept for
+# reading when a test fails.
+#
+cepStart() {
+  "$CEP_BIN" --broker "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" \
+             > "$CEP_TEST_DIR/corCep.log" 2>&1 &
+  echo $! > "$CEP_TEST_DIR/corCep.pid"
+
+  cepAwaitLog " rules\?, [0-9]* subscriptions\?$" 10 > /dev/null
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# cepStop - stop the corCep cepStart started (by its pid, never by name)
+#
+cepStop() {
+  local pidFile="$CEP_TEST_DIR/corCep.pid"
+  [ -f "$pidFile" ] || return 0
+
+  local pid i
+  pid=$(cat "$pidFile")
+  kill "$pid" 2>/dev/null
+  for ((i = 0; i < 50; i++)); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -9 "$pid" 2>/dev/null
+  rm -f "$pidFile"
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# cepAwaitLog <regex> [seconds] - wait until a line of corCep's log matches (grep BRE), then print the line
+# without its timestamp
+#
+cepAwaitLog() {
+  local secs="${2:-5}" i line
+
+  for ((i = 0; i < secs * 10; i++)); do
+    line=$(grep -- "$1" "$CEP_TEST_DIR/corCep.log" 2>/dev/null | tail -1)
+    if [ -n "$line" ]; then
+      echo "${line#* * }"
+      return 0
+    fi
+    if ! kill -0 "$(cat "$CEP_TEST_DIR/corCep.pid" 2>/dev/null)" 2>/dev/null; then
+      echo "cepAwaitLog: corCep is not running - $CEP_TEST_DIR/corCep.log:" >&2
+      tail -20 "$CEP_TEST_DIR/corCep.log" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+
+  echo "cepAwaitLog: no line matching '$1' after ${secs}s - $CEP_TEST_DIR/corCep.log:" >&2
+  tail -20 "$CEP_TEST_DIR/corCep.log" >&2
+  return 1
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# attrAwait <entityId> <attr> <value> [seconds] - wait until the attribute's value (keyValues) is <value>,
+# given as JSON (true, 42, "on")
+#
+attrAwait() {
+  local url="http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$1?options=keyValues&attrs=$2"
+  local secs="${4:-5}" i body
+
+  for ((i = 0; i < secs * 10; i++)); do
+    body=$(curl -s -H "NGSILD-Tenant: $(cepTenant)" "$url")
+    echo "$body" | grep -qE "\"$2\": *$3[,}]" && return 0
+    sleep 0.1
+  done
+
+  echo "attrAwait: $1 $2 is not $3 after ${secs}s: $body" >&2
+  return 1
+}
