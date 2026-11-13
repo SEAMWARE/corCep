@@ -6,8 +6,8 @@
 //
 // corCep - an NGSI-LD complex event processor (doc/design.md)
 //
-//   corCep --broker http://host:port [--port 7602] [--notify-url http://host:7602] [--tenant T] [--token-env VAR]
-//          [--stats-interval 10]
+//   corCep --broker http://host:port [--port 7602] [--notify-url http://host:7602] [--tenant T]
+//          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval 10]
 //
 #include <stdarg.h>                              // va_list
 #include <stdio.h>                               // fprintf, vfprintf
@@ -16,9 +16,13 @@
 #include <sys/random.h>                          // getrandom
 #include <time.h>                                // clock_gettime, localtime_r
 
+#include <openssl/evp.h>                         // EVP_sha256
+#include <openssl/pem.h>                         // PEM_read_X509
+#include <openssl/x509.h>                        // X509_digest
+
 #include "corArgs/corArgs.h"                     // corArgsInit, corArgsParse
 #include "corArgs/CorArg.h"                      // CorArg
-#include "corRest/corRestClient.h"               // corRestClientInit
+#include "corRest/corRestClient.h"               // corRestClientInit, corRestClientTlsPinSet
 
 #include "corCep.h"
 
@@ -33,6 +37,8 @@ CepSession cep;
 static char* brokerArg    = NULL;
 static char* tenantArg    = NULL;
 static char* tokenEnvArg  = NULL;
+static char* tokenCmdArg  = NULL;
+static char* brokerCertArg = NULL;
 static char* notifyUrlArg = NULL;
 static int   portArg      = 7602;
 
@@ -49,6 +55,8 @@ static CorArg options[] =
   { "--notify-url", "-nu", CorArgString, &notifyUrlArg, CorArgOpt, NULL,      NULL,  NULL,        "the URL the broker reaches corCep at (default: http://127.0.0.1:<port>)" },
   { "--tenant",     "-t",  CorArgString, &tenantArg,    CorArgOpt, NULL,      NULL,  NULL,        "the tenant (default: the broker's default tenant)" },
   { "--token-env",  "-te", CorArgString, &tokenEnvArg,  CorArgOpt, NULL,      NULL,  NULL,        "the environment variable holding the bearer token sent to the broker" },
+  { "--token-command", "-tc", CorArgString, &tokenCmdArg, CorArgOpt, NULL,     NULL,  NULL,        "a command printing the bearer token - run again before it expires, and on a 401" },
+  { "--broker-cert", "-bc", CorArgString, &brokerCertArg, CorArgOpt, NULL,     NULL,  NULL,        "the broker's own certificate (PEM): trusted as it is, instead of the CA store and the host name" },
   { "--stats-interval", "-si", CorArgInt, &statsInterval, CorArgOpt, _vp 10,  _vp 0, _vp 86400,   "seconds between two writes of a rule's statistics to its Rule entity (0: at once)" },
   CORARGS_END
 };
@@ -94,6 +102,52 @@ static void trimSlash(char* url)
 
 // -----------------------------------------------------------------------------
 //
+// brokerCertPin - --broker-cert: the certificate's SHA-256 pinned (corRestClientTlsPinSet) - the broker's own
+// certificate trusted as it is: self-signed, its name not the one corCep uses (a home hub's, at localhost)
+//
+static bool brokerCertPin(const char* path, char* why, int whyLen)
+{
+  FILE* fP = fopen(path, "r");
+
+  if (fP == NULL)
+  {
+    snprintf(why, whyLen, "--broker-cert %s - cannot be read", path);
+    return false;
+  }
+
+  X509* certP = PEM_read_X509(fP, NULL, NULL, NULL);
+  fclose(fP);
+
+  if (certP == NULL)
+  {
+    snprintf(why, whyLen, "--broker-cert %s - no PEM certificate in it", path);
+    return false;
+  }
+
+  unsigned char md[EVP_MAX_MD_SIZE];
+  unsigned int  mdLen = 0;
+  char          hex[2 * EVP_MAX_MD_SIZE + 1];
+
+  X509_digest(certP, EVP_sha256(), md, &mdLen);
+  X509_free(certP);
+
+  for (unsigned int ix = 0; ix < mdLen; ix++)
+    snprintf(&hex[ix * 2], 3, "%02x", md[ix]);
+
+  if (corRestClientTlsPinSet(hex) == false)
+  {
+    snprintf(why, whyLen, "--broker-cert %s - its fingerprint not taken", path);
+    return false;
+  }
+
+  logLine("the broker's certificate pinned: %.16s... (%s)", hex, path);
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // main -
 //
 int main(int argC, char* argV[])
@@ -123,18 +177,21 @@ int main(int argC, char* argV[])
 
   cep.broker     = brokerArg;
   cep.tenant     = ((tenantArg != NULL) && (tenantArg[0] != 0)) ? tenantArg : NULL;
-  cep.token      = NULL;
   cep.notifyBase = notifyBase;
   cep.port       = (unsigned short) portArg;
 
-  if (tokenEnvArg != NULL)
+  char why[1024];
+
+  if (tokenInit(tokenEnvArg, tokenCmdArg, why, sizeof(why)) == false)
   {
-    cep.token = getenv(tokenEnvArg);
-    if ((cep.token == NULL) || (cep.token[0] == 0))
-    {
-      fprintf(stderr, "corCep: --token-env %s - the variable is not set\n", tokenEnvArg);
-      return 1;
-    }
+    fprintf(stderr, "corCep: %s\n", why);
+    return 1;
+  }
+
+  if ((brokerCertArg != NULL) && (brokerCertPin(brokerCertArg, why, sizeof(why)) == false))
+  {
+    fprintf(stderr, "corCep: %s\n", why);
+    return 1;
   }
 
   //

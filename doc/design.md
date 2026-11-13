@@ -185,7 +185,10 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 ## 7. Security
 
 - corCep acts with its own identity: an ES256 key, a token with the roles the rules need (`ngsild-read`,
-  `ngsild-write`), the broker's JWK Set holding its public half.
+  `ngsild-write`), the broker's JWK Set holding its public half. The token comes from `--token-command` - signed
+  outside corCep, renewed before it expires and on a 401; corCep never holds the key.
+- A broker whose certificate is its own (a home hub's, self-signed, reached at `localhost`): `--broker-cert` pins
+  it - that certificate and no other, instead of the CA store and the host name.
 - A rule acts with corCep's rights, so who may write a Rule entity decides who may act: rules are a protected
   type in the broker's policy (a user may write rules only over entities they may write themselves - section 8,
   decision 6).

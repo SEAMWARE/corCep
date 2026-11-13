@@ -27,8 +27,8 @@ make install          # /usr/local/bin/corCep (PREFIX=..., DESTDIR=...)
 ## Run
 
 ```
-corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant T] [--token-env VAR]
-       [--stats-interval 10]
+corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant T]
+       [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval 10]
 ```
 
 | Option | |
@@ -37,7 +37,9 @@ corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant
 | `--port`, `-p` | the port the broker's notifications come to (default 7602) |
 | `--notify-url`, `-nu` | the URL the broker reaches corCep at (default `http://127.0.0.1:<port>`) - a broker on another host needs it |
 | `--tenant`, `-t` | the tenant (`NGSILD-Tenant`); default: the broker's default tenant |
-| `--token-env`, `-te` | the environment variable holding a bearer token, sent as `Authorization` - never a command-line argument |
+| `--token-env`, `-te` | the environment variable holding a bearer token, sent as `Authorization` - never a command-line argument. Fixed: never renewed |
+| `--token-command`, `-tc` | a command (`sh -c`) whose first line of output is the bearer token - run at start, again before the token expires, and when the broker answers 401. See [A broker that takes short-lived tokens](#a-broker-that-takes-short-lived-tokens) |
+| `--broker-cert`, `-bc` | the broker's own certificate (PEM), trusted as it is - for a broker whose certificate no CA signed and whose name is not the one in `--broker`. See [A broker with a certificate of its own](#a-broker-with-a-certificate-of-its-own) |
 | `--stats-interval`, `-si` | seconds between two writes of a rule's statistics to its Rule entity (default 10; 0: at once) - see [Statistics](#statistics) |
 
 The options can also come from the environment: `CORCEP_BROKER`, `CORCEP_PORT`, ...
@@ -282,6 +284,39 @@ curl -s 'localhost:1026/ngsi-ld/v1/entities/urn:ngsi-ld:Rule:room-2-14-upper?att
 The Rule subscription watches only `when`, `then`, `enabled`, `name` and `location`: writing the statistics does not
 make corCep read the rules again.
 
+### A broker that takes short-lived tokens
+
+`--token-command` runs a command that prints a token - a JWT signed by a key of corCep's own, a Keycloak client's
+token (client credentials), whatever the broker takes. corCep runs it:
+
+- at start - a command that fails, or prints nothing: corCep does not start;
+- again before the token expires: a JWT, 60 s before its `exp`; a token that is no JWT, or has no `exp`, every 5 minutes;
+- again when the broker answers 401 - and the request is made once more, with the new token.
+
+A command that fails later is logged; the old token is kept, and the command is tried again 10 s later.
+
+```
+corCep --broker http://localhost:1026 \
+       --token-command 'curl -s -d grant_type=client_credentials -u corcep:$SECRET https://keycloak/realms/r/protocol/openid-connect/token | jq -r .access_token'
+```
+
+`--token-env` and `--token-command`: one of them.
+
+### A broker with a certificate of its own
+
+`--broker-cert` pins the broker's certificate: the TLS connection is accepted when the broker shows exactly that
+certificate (its SHA-256) - instead of the CA store, and the host name is not checked. Any other certificate: the
+connection is refused. For a broker whose certificate is self-signed and names a host corCep does not use - a home
+hub's broker, reached at `localhost`, its certificate made for `hub.local`:
+
+```
+corCep --broker https://localhost:1026 --broker-cert /etc/hub/tls/cert.pem --token-command '/usr/local/bin/hub-token'
+```
+
+Without `--broker-cert`, an `https://` broker's certificate is checked against the system's CA store and its name.
+
+The test `cep_broker_auth` runs both against a broker of its own (HTTPS, OIDC with a JWK Set file).
+
 ## How it talks to the broker
 
 - `urn:ngsi-ld:Subscription:corcep-rules` - every Rule entity, created, deleted, or with `when`, `then`, `enabled`
@@ -335,6 +370,7 @@ new on every run. Against another NGSI-LD broker: `CEP_BROKER_HOST=... CEP_BROKE
 | `cep_schedule_cron` | six fields: every 2 s, on the second; five: the next weekday 07:00, as Python counts it |
 | `cep_schedule_at` | a clock time fires once, on time; sunset at the Rule's location, an offset; a new location - a new sunset |
 | `cep_schedule_left_out` | schedules that are not right, each with the reason |
+| `cep_broker_auth` | a broker of its own, HTTPS (a self-signed certificate for another name) and OIDC tokens only: `--broker-cert` pins it (another certificate refused), `--token-command` - a refused first token renewed on the 401, a token renewed before it expires |
 
 The tests on patterns over time wait for events to be processed rather than sleep: a "sentinel" rule on the same
 event fires on every one, and corCep feeds every rule of an event, the patterns first, before the next event.
