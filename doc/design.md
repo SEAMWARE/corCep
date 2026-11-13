@@ -4,7 +4,8 @@ An NGSI-LD complex event processor: it watches entities in an NGSI-LD broker, re
 a sequence, an absence, a value over a window) and acts on entities. Written in C on the cor-libs. Works with any
 NGSI-LD broker; with coraine it can also run inside the broker.
 
-Status: DRAFT for KZ - nothing is built. Section 8 lists the decisions this note needs.
+Status: P1 and P2.1 built (README.md) - one event or `any` of several, `where`, set / toggle, statistics. Section 8
+lists the decisions this note needs.
 
 ## 1. What it is for
 
@@ -84,7 +85,10 @@ An **event** is one notification of one watched attribute, the same value again 
 | `event` | the name the pattern uses |
 | `entity` / `type` + `q` | which entities: one id, or every entity of a type that matches q (NGSI-LD q, parsed by corNgsild) |
 | `attribute` | the attribute watched |
-| `where` | a condition on the notified value or other attributes of the same entity (NGSI-LD q syntax) |
+| `where` | a condition on the notified value or other attributes of the same entity (NGSI-LD q syntax) - the q of the event's subscription: the broker evaluates it (built in P2.1) |
+
+A rule with one event writes it as `when` itself (`{ "entity", "attribute", "where" }`); with several, `when` is
+`{ "events": [ <event>, ... ], "pattern": <pattern> }` (built in P2.1).
 
 A **condition on other entities** (the state of the site, not an event): `"if": "<entity>.<q expression>"`,
 read from corCep's copy of the watched entities when the pattern completes.
@@ -161,8 +165,9 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
   removed, every 5 min any missing one is made again.
 - The broker away: actions are retried with back-off for `retryFor` (default 30 s), then dropped and counted -
   a light switched minutes late is worse than not switched.
-- Per rule, as attributes of the Rule entity (written at most every 10 s): `firedAt`, `fired` (count),
-  `lastError`, `droppedMatches`. The app shows "what it does" and "when it last did it".
+- Per rule, as attributes of the Rule entity (written at most every `--stats-interval` s, default 10): `firedAt`,
+  `fired` (count), `lastError`, `droppedMatches` (with the patterns over time). The Rule subscription watches
+  `when`, `then`, `enabled`, `name` only - the statistics written are not news to corCep (built in P2.1). The app shows "what it does" and "when it last did it".
 
 ## 7. Security
 

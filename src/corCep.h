@@ -77,10 +77,11 @@ typedef struct CepAction
 
 typedef struct CepEvent
 {
-  char*  name;
+  char*  name;                                   // the name the pattern uses ('event'; default: the attribute)
   char*  entity;                                 // one entity ...
   char*  type;                                   // ... or (with entity NULL) every entity of a type
   char*  attribute;                              // the attribute watched
+  char*  q;                                      // 'where': an NGSI-LD q the broker applies (the subscription's q), NULL: none
   int    watch;                                  // its index in the watch list - its subscription
 } CepEvent;
 
@@ -88,16 +89,19 @@ typedef struct CepRule
 {
   char*       id;
   char*       name;
-  CepEvent    event;
+  CepEvent*   eventV;                            // the events the pattern uses: ANY of them fires the rule (P2.1)
+  int         events;
   CepAction*  actionV;
   int         actions;
+  long        firedBase;                         // 'fired' as the Rule entity holds it - where the count goes on from
 } CepRule;
 
-typedef struct CepWatch                          // one subscription: (entity or type, attribute)
+typedef struct CepWatch                          // one subscription: (entity or type, attribute, q)
 {
   char*  entity;
   char*  type;
   char*  attribute;
+  char*  q;
   int    sub;                                    // its subscription's number: corcep-<sub>, /notify/<secret>/<sub>
 } CepWatch;
 
@@ -108,6 +112,7 @@ typedef struct CepRules                          // a generation of rules - repl
   int        rules;
   CepWatch*  watchV;
   int        watches;
+  int        watchMax;
 } CepRules;
 
 extern CepRules* rulesLoad(void);
@@ -119,6 +124,7 @@ extern void      rulesFree(CepRules* rulesP);
 //
 // Subscriptions, the listener, the engine
 //
+extern int  statsInterval;                                    // seconds between two writes of a rule's statistics
 extern bool subsInit(void);                                   // stale ones removed, the Rule subscription made
 extern bool subsApply(CepRules* rulesP);                      // one per watch, the old ones replaced
 extern bool listenerStart(void);                              // the notification server, its own thread

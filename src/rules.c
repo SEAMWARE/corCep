@@ -64,29 +64,35 @@ static int count(CorNode* nP)
 
 // -----------------------------------------------------------------------------
 //
-// eventParse - `when` in P1: one event { entity | type, attribute }
+// eventParse - one event: { "event": name, "entity": id | "type": type, "attribute": attribute, "where": q }
 //
-static bool eventParse(CorAlloc* allocP, CorNode* whenP, CepEvent* evP, char* why, int whyLen)
+static bool eventParse(CorAlloc* allocP, CorNode* evNodeP, CepEvent* evP, const char* what, char* why, int whyLen)
 {
-  if ((whenP == NULL) || (whenP->type != CorObject))
+  if ((evNodeP == NULL) || (evNodeP->type != CorObject))
   {
-    snprintf(why, whyLen, "'when' - an object");
+    snprintf(why, whyLen, "%s - an object", what);
     return false;
   }
 
-  char* entity    = str(whenP, "entity");
-  char* type      = str(whenP, "type");
-  char* attribute = str(whenP, "attribute");
-  char* name      = str(whenP, "event");
+  char*    entity    = str(evNodeP, "entity");
+  char*    type      = str(evNodeP, "type");
+  char*    attribute = str(evNodeP, "attribute");
+  char*    name      = str(evNodeP, "event");
+  CorNode* whereP    = corTreeLookup(evNodeP, "where");
 
   if ((entity == NULL) && (type == NULL))
   {
-    snprintf(why, whyLen, "'when' names no 'entity' and no 'type'");
+    snprintf(why, whyLen, "%s names no 'entity' and no 'type'", what);
     return false;
   }
   if (attribute == NULL)
   {
-    snprintf(why, whyLen, "'when' names no 'attribute'");
+    snprintf(why, whyLen, "%s names no 'attribute'", what);
+    return false;
+  }
+  if ((whereP != NULL) && ((whereP->type != CorString) || (whereP->value.s[0] == 0)))
+  {
+    snprintf(why, whyLen, "%s: 'where' - an NGSI-LD q, a string", what);
     return false;
   }
 
@@ -106,15 +112,165 @@ static bool eventParse(CorAlloc* allocP, CorNode* whenP, CepEvent* evP, char* wh
   }
   if (type == NULL)
   {
-    snprintf(why, whyLen, "'when' names an entity whose id holds no type (urn:ngsi-ld:<type>:...) - give 'type' too");
+    snprintf(why, whyLen, "%s names an entity whose id holds no type (urn:ngsi-ld:<type>:...) - give 'type' too", what);
     return false;
   }
 
   evP->name      = corAllocStrdup(allocP, (name != NULL) ? name : attribute);
   evP->entity    = (entity != NULL) ? corAllocStrdup(allocP, entity) : NULL;
-  evP->type      = (type   != NULL) ? corAllocStrdup(allocP, type)   : NULL;
+  evP->type      = corAllocStrdup(allocP, type);
   evP->attribute = corAllocStrdup(allocP, attribute);
+  evP->q         = (whereP != NULL) ? corAllocStrdup(allocP, whereP->value.s) : NULL;
   evP->watch     = -1;
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// whenParse - `when`, in one of two forms:
+//
+//   { "entity" | "type", "attribute", "where" }                one event - the short form
+//   { "events": [ <event>, ... ], "pattern": <pattern> }       named events, combined by the pattern
+//
+// The patterns of P2.1: "<event>" (that one), { "any": [ "<event>", ... ] } (any of them); no pattern with
+// one event: that event. The others of doc/design.md § 3.1 are recognised and refused: not supported yet.
+//
+static bool whenParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* why, int whyLen)
+{
+  if ((whenP == NULL) || (whenP->type != CorObject))
+  {
+    snprintf(why, whyLen, "'when' - an object");
+    return false;
+  }
+
+  CorNode* eventsP  = corTreeLookup(whenP, "events");
+  CorNode* patternP = corTreeLookup(whenP, "pattern");
+
+  if (eventsP == NULL)
+  {
+    if (patternP != NULL)
+    {
+      snprintf(why, whyLen, "'when': a 'pattern' needs 'events'");
+      return false;
+    }
+
+    ruleP->eventV = (CepEvent*) corAlloc(allocP, sizeof(CepEvent));
+    ruleP->events = 1;
+    return eventParse(allocP, whenP, &ruleP->eventV[0], "'when'", why, whyLen);
+  }
+
+  if ((eventsP->type != CorArray) || (eventsP->value.head == NULL))
+  {
+    snprintf(why, whyLen, "'when': 'events' - a list of events");
+    return false;
+  }
+
+  //
+  // Every event declared - parsed, and named once only
+  //
+  int       n       = count(eventsP);
+  CepEvent* declV   = (CepEvent*) corAlloc(allocP, n * sizeof(CepEvent));
+  int       decls   = 0;
+
+  for (CorNode* eP = eventsP->value.head; eP != NULL; eP = eP->next)
+  {
+    char what[64];
+    snprintf(what, sizeof(what), "event %d of 'events'", decls + 1);
+
+    if (eventParse(allocP, eP, &declV[decls], what, why, whyLen) == false)
+      return false;
+
+    for (int ix = 0; ix < decls; ix++)
+    {
+      if (strcmp(declV[ix].name, declV[decls].name) == 0)
+      {
+        snprintf(why, whyLen, "'events': two events named '%s'", declV[decls].name);
+        return false;
+      }
+    }
+    ++decls;
+  }
+
+  //
+  // The pattern: which of them fire the rule
+  //
+  CorNode* namesP = NULL;
+  char*    one    = NULL;
+
+  if (patternP == NULL)
+  {
+    if (decls != 1)
+    {
+      snprintf(why, whyLen, "'when': %d events need a 'pattern' - { \"any\": [ ... ] }", decls);
+      return false;
+    }
+    one = declV[0].name;
+  }
+  else if (patternP->type == CorString)
+    one = patternP->value.s;
+  else if (patternP->type == CorObject)
+  {
+    CorNode* kindP = patternP->value.head;
+
+    if ((kindP == NULL) || (strcmp(kindP->name, "any") != 0))
+    {
+      snprintf(why, whyLen, "pattern '%s' is not supported yet", (kindP != NULL) ? kindP->name : "{}");
+      return false;
+    }
+    if ((kindP->type != CorArray) || (kindP->value.head == NULL))
+    {
+      snprintf(why, whyLen, "'any' - a list of event names");
+      return false;
+    }
+    namesP = kindP;
+  }
+  else
+  {
+    snprintf(why, whyLen, "'pattern' - an event name or an object");
+    return false;
+  }
+
+  ruleP->eventV = (CepEvent*) corAlloc(allocP, decls * sizeof(CepEvent));
+  ruleP->events = 0;
+
+  for (CorNode* nP = (namesP != NULL) ? namesP->value.head : NULL; (nP != NULL) || (one != NULL); nP = (nP != NULL) ? nP->next : NULL)
+  {
+    const char* name = (one != NULL) ? one : ((nP->type == CorString) ? nP->value.s : NULL);
+    int         ix;
+
+    if (name == NULL)
+    {
+      snprintf(why, whyLen, "'any' - a list of event names");
+      return false;
+    }
+
+    for (ix = 0; ix < decls; ix++)
+    {
+      if (strcmp(declV[ix].name, name) == 0)
+        break;
+    }
+    if (ix == decls)
+    {
+      snprintf(why, whyLen, "the pattern names '%s' - no such event in 'events'", name);
+      return false;
+    }
+
+    for (int jx = 0; jx < ruleP->events; jx++)
+    {
+      if (strcmp(ruleP->eventV[jx].name, name) == 0)
+      {
+        snprintf(why, whyLen, "'any' names '%s' twice", name);
+        return false;
+      }
+    }
+    ruleP->eventV[ruleP->events++] = declV[ix];
+
+    if (one != NULL)
+      break;
+  }
 
   return true;
 }
@@ -173,26 +329,46 @@ static bool actionParse(CorAlloc* allocP, CorNode* aP, CepAction* actP, char* wh
 
 // -----------------------------------------------------------------------------
 //
-// watchOf - the watch an event needs: one subscription per (entity or type, attribute)
+// same - two strings, either NULL
 //
-static int watchOf(CepRules* rP, CepEvent* evP, int max)
+static bool same(const char* a, const char* b)
+{
+  return ((a == NULL) && (b == NULL)) || ((a != NULL) && (b != NULL) && (strcmp(a, b) == 0));
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// watchOf - the watch an event needs: one subscription per (entity or type, attribute, q)
+//
+static int watchOf(CepRules* rP, CepEvent* evP)
 {
   for (int ix = 0; ix < rP->watches; ix++)
   {
     CepWatch* wP = &rP->watchV[ix];
-    if ((strcmp(wP->attribute, evP->attribute) == 0) &&
-        (((wP->entity != NULL) && (evP->entity != NULL) && (strcmp(wP->entity, evP->entity) == 0)) ||
-         ((wP->entity == NULL) && (evP->entity == NULL) && (strcmp(wP->type, evP->type) == 0))))
+    if ((strcmp(wP->attribute, evP->attribute) == 0) && same(wP->q, evP->q) &&
+        (((wP->entity != NULL) && same(wP->entity, evP->entity)) || ((wP->entity == NULL) && (evP->entity == NULL) && (strcmp(wP->type, evP->type) == 0))))
       return ix;
   }
 
-  if (rP->watches >= max)
-    return -1;
+  if (rP->watches == rP->watchMax)
+  {
+    int       max = (rP->watchMax == 0) ? 16 : rP->watchMax * 2;
+    CepWatch* wV  = (CepWatch*) corAlloc(&rP->alloc, max * sizeof(CepWatch));
+
+    if (rP->watches > 0)
+      memcpy(wV, rP->watchV, rP->watches * sizeof(CepWatch));
+    rP->watchV   = wV;
+    rP->watchMax = max;
+  }
 
   CepWatch* wP  = &rP->watchV[rP->watches];
   wP->entity    = evP->entity;
   wP->type      = evP->type;
   wP->attribute = evP->attribute;
+  wP->q         = evP->q;
+  wP->sub       = -1;
 
   return rP->watches++;
 }
@@ -239,7 +415,6 @@ CepRules* rulesLoad(void)
 
   int n = count(resp.body);
   rP->ruleV  = (CepRule*)  corAlloc(&rP->alloc, (n + 1) * sizeof(CepRule));
-  rP->watchV = (CepWatch*) corAlloc(&rP->alloc, (n + 1) * sizeof(CepWatch));
 
   for (CorNode* eP = resp.body->value.head; eP != NULL; eP = eP->next)
   {
@@ -259,8 +434,12 @@ CepRules* rulesLoad(void)
     ruleP->id   = corAllocStrdup(&rP->alloc, id);
     ruleP->name = corAllocStrdup(&rP->alloc, (str(eP, "name") != NULL) ? str(eP, "name") : id);
 
-    if (eventParse(&rP->alloc, json(eP, "when"), &ruleP->event, why, sizeof(why)) == false)
+    if (whenParse(&rP->alloc, json(eP, "when"), ruleP, why, sizeof(why)) == false)
       goto bad;
+
+    CorNode* firedP = corTreeLookup(eP, "fired");
+    if ((firedP != NULL) && (firedP->type == CorInt))
+      ruleP->firedBase = firedP->value.i;
 
     if ((thenP == NULL) || (thenP->type != CorArray) || (thenP->value.head == NULL))
     {
@@ -277,7 +456,8 @@ CepRules* rulesLoad(void)
       ++ruleP->actions;
     }
 
-    ruleP->event.watch = watchOf(rP, &ruleP->event, n + 1);
+    for (int ix = 0; ix < ruleP->events; ix++)
+      ruleP->eventV[ix].watch = watchOf(rP, &ruleP->eventV[ix]);
     ++rP->rules;
     continue;
 

@@ -6,7 +6,7 @@
 //
 // corCep's subscriptions, all with the id prefix urn:ngsi-ld:Subscription:corcep-:
 //   corcep-rules  every Rule entity - a rule made, changed or deleted reloads the rules
-//   corcep-<n>    one per watch (entity or type, attribute) - its notifications are events
+//   corcep-<n>    one per watch (entity or type, attribute, q) - its notifications are events
 // The notifications go to <notifyBase>/notify/<secret>/<rules | n>.
 //
 #include <stdio.h>                               // snprintf
@@ -28,7 +28,7 @@
 //
 typedef struct Sub
 {
-  char*  key;                                    // "<entity or type>|<attribute>", malloc'd
+  char*  key;                                    // "<entity or type>|<attribute>|<q>", malloc'd
   int    no;                                     // corcep-<no>
   bool   used;
 } Sub;
@@ -58,9 +58,12 @@ static void subDelete(CorAlloc* allocP, const char* id)
 
 // -----------------------------------------------------------------------------
 //
-// subCreate - entities [{ id | type }], watchedAttributes [attribute] (NULL: every change), keyValues
+// subCreate - entities [{ id | type }], watchedAttributes [attribute], q, keyValues
 //
-static bool subCreate(CorAlloc* allocP, const char* id, const char* entity, const char* type, const char* attribute, const char* which)
+// The Rule subscription (attribute NULL) watches what makes a rule - not the statistics corCep writes to it
+// (fired, firedAt, lastError): a write of those must not read the rules again.
+//
+static bool subCreate(CorAlloc* allocP, const char* id, const char* entity, const char* type, const char* attribute, const char* q, const char* which)
 {
   CorNode* subP      = corTreeObject(allocP, NULL);
   CorNode* entitiesP = corTreeArray(allocP, "entities");
@@ -71,7 +74,8 @@ static bool subCreate(CorAlloc* allocP, const char* id, const char* entity, cons
   char     description[512];
 
   snprintf(uri, sizeof(uri), "%s/notify/%s/%s", cep.notifyBase, cep.secret, which);
-  snprintf(description, sizeof(description), "corCep: %s %s", (entity != NULL) ? entity : type, (attribute != NULL) ? attribute : "(any change)");
+  snprintf(description, sizeof(description), "corCep: %s %s%s%s", (entity != NULL) ? entity : type, (attribute != NULL) ? attribute : "(the rules)",
+           (q != NULL) ? " where " : "", (q != NULL) ? q : "");
 
   corTreeChildAdd(subP, corTreeString(allocP, "id", id));
   corTreeChildAdd(subP, corTreeString(allocP, "type", "Subscription"));
@@ -89,6 +93,13 @@ static bool subCreate(CorAlloc* allocP, const char* id, const char* entity, cons
   //
   if (attribute == NULL)
   {
+    CorNode* watchedP  = corTreeArray(allocP, "watchedAttributes");
+    corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "when"));
+    corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "then"));
+    corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "enabled"));
+    corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "name"));
+    corTreeChildAdd(subP, watchedP);
+
     CorNode* triggersP = corTreeArray(allocP, "notificationTrigger");
     corTreeChildAdd(triggersP, corTreeString(allocP, NULL, "entityCreated"));
     corTreeChildAdd(triggersP, corTreeString(allocP, NULL, "entityUpdated"));
@@ -104,6 +115,9 @@ static bool subCreate(CorAlloc* allocP, const char* id, const char* entity, cons
     corTreeChildAdd(attrsP,   corTreeString(allocP, NULL, attribute));
     corTreeChildAdd(subP, watchedP);
     corTreeChildAdd(notifP, attrsP);
+
+    if (q != NULL)
+      corTreeChildAdd(subP, corTreeString(allocP, "q", q));
   }
 
   corTreeChildAdd(notifP, corTreeString(allocP, "format", "keyValues"));
@@ -157,7 +171,7 @@ bool subsInit(void)
     }
   }
 
-  bool ok = subCreate(&alloc, CEP_SUB_RULES, NULL, "Rule", NULL, "rules");
+  bool ok = subCreate(&alloc, CEP_SUB_RULES, NULL, "Rule", NULL, NULL, "rules");
 
   corAllocBufferReset(&alloc, false);
   return ok;
@@ -171,7 +185,8 @@ bool subsInit(void)
 //
 static void watchKey(CepWatch* wP, char* key, int keyLen)
 {
-  snprintf(key, keyLen, "%s%s|%s", (wP->entity != NULL) ? "id:" : "type:", (wP->entity != NULL) ? wP->entity : wP->type, wP->attribute);
+  snprintf(key, keyLen, "%s%s|%s|%s", (wP->entity != NULL) ? "id:" : "type:", (wP->entity != NULL) ? wP->entity : wP->type, wP->attribute,
+           (wP->q != NULL) ? wP->q : "");
 }
 
 
@@ -218,7 +233,7 @@ bool subsApply(CepRules* rulesP)
     snprintf(id, sizeof(id), "%s%d", CEP_SUB_PREFIX, no);
     snprintf(which, sizeof(which), "%d", no);
 
-    if (subCreate(&alloc, id, wP->entity, wP->type, wP->attribute, which) == false)
+    if (subCreate(&alloc, id, wP->entity, wP->type, wP->attribute, wP->q, which) == false)
     {
       wP->sub = -1;
       ok      = false;
