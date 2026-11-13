@@ -4,24 +4,24 @@ An NGSI-LD complex event processor: it watches entities in an NGSI-LD broker, re
 a sequence, an absence, a value over a window) and acts on entities. Written in C on the cor-libs. Works with any
 NGSI-LD broker; with coraine it can also run inside the broker.
 
-Status: DRAFT for KZ - nothing is built. Section 9 lists the decisions this note needs.
+Status: DRAFT for KZ - nothing is built. Section 8 lists the decisions this note needs.
 
 ## 1. What it is for
 
 | Need | Example |
 |---|---|
-| An event switches something | a remote's upper button switches a lamp on |
-| A held button steps a value | held: the lamp brighter every 0.3 s until released |
+| An event switches something | a wall switch's upper button switches the room's lights on |
+| A held button steps a value | held: the light brighter every 0.3 s until released |
 | A sequence | two presses within 0.5 s: every light of the room off |
-| A combination | the door opened AND nobody at home: an alert entity |
-| An absence | no motion in the hall for 10 min: the hall light off |
+| A combination | a door opened AND the building in night mode: an alert entity |
+| An absence | no presence in corridor 2 for 10 min: the corridor lights off |
 | A window / aggregate | the mean temperature over 1 h above 26 °C: the fan on |
-| A guard | the garage door opens only on a double press, never on a single one |
-| A schedule | every day at sunset: the porch light on |
-| Several actions | the oven on AND the light over the stove on |
-| A group target | every Light in the room the remote is in |
+| A guard | the loading-dock door opens only on a double press, never on a single one |
+| A schedule | every day at sunset: the car park lights on |
+| Several actions | the conveyor stopped AND the line's warning beacon on |
+| A group target | every Light in the room the switch is in |
 
-Users: corHome first (its rules today: `corHome/hub/rules`, section 8), any NGSI-LD deployment after it (a FIWARE
+Users: any NGSI-LD deployment - buildings, sites, industry (a FIWARE
 Generic Enabler candidate: no NGSI-LD CEP exists in the FIWARE catalogue; Perseo is NGSIv2 and Orion only).
 
 ## 2. Architecture
@@ -59,9 +59,9 @@ A rule is an entity:
 
 ```json
 {
-  "id": "urn:ngsi-ld:Rule:playroom-double-press",
+  "id": "urn:ngsi-ld:Rule:room-2-14-double-press",
   "type": "Rule",
-  "name": { "type": "Property", "value": "playroom: two presses - all room lights off" },
+  "name": { "type": "Property", "value": "room 2.14: two presses - all room lights off" },
   "enabled": { "type": "Property", "value": true },
   "when": { "type": "JsonProperty", "json": { ... } },
   "then": { "type": "JsonProperty", "json": [ ... ] }
@@ -76,7 +76,7 @@ the rule reads the same in any context.
 An **event** is one notification of one watched attribute, the same value again included (a button pressed twice):
 
 ```json
-{ "event": "press", "entity": "urn:ngsi-ld:Remote:playroom-remote", "attribute": "upperPress" }
+{ "event": "press", "entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress" }
 ```
 
 | Member | |
@@ -86,7 +86,7 @@ An **event** is one notification of one watched attribute, the same value again 
 | `attribute` | the attribute watched |
 | `where` | a condition on the notified value or other attributes of the same entity (NGSI-LD q syntax) |
 
-A **condition on other entities** (the state of the home, not an event): `"if": "<entity>.<q expression>"`,
+A **condition on other entities** (the state of the site, not an event): `"if": "<entity>.<q expression>"`,
 read from corCep's copy of the watched entities when the pattern completes.
 
 A **pattern** combines events. The vocabulary is SQL:2016 row pattern recognition (`MATCH_RECOGNIZE`,
@@ -97,15 +97,15 @@ ISO/IEC 9075-2:2016) - sequence, alternatives, quantifiers - in JSON:
 | `"press"` | one event |
 | `{ "seq": ["press", "press"], "within": "PT0.5S" }` | two presses, the second within 0.5 s of the first |
 | `{ "any": ["a", "b"] }` | a or b |
-| `{ "all": ["doorOpen", "nobodyHome"], "within": "PT1M" }` | both, in any order, within 1 min |
+| `{ "all": ["doorOpen", "nightMode"], "within": "PT1M" }` | both, in any order, within 1 min |
 | `{ "repeat": "press", "min": 3, "within": "PT2S" }` | three presses within 2 s |
 | `{ "absent": "motion", "for": "PT10M" }` | no motion event for 10 min (a timer, restarted by each event) |
 | `{ "window": "temp", "for": "PT1H", "avg": { "gt": 26 } }` | the mean over the last hour above 26 (also `min`, `max`, `sum`, `count`) |
-| `{ "at": "sunset" }` / `{ "cron": "0 7 * * 1-5" }` | a schedule (sunset from the home's location) |
+| `{ "at": "sunset" }` / `{ "cron": "0 7 * * 1-5" }` | a schedule (sunset from the site's location) |
 
 Durations are ISO 8601 (as NGSI-LD's own). A `seq` that finishes also cancels the shorter rules it overlaps,
-when the rule says so (`"supersedes": ["urn:ngsi-ld:Rule:playroom-press"]`): a double press does not also fire
-the single press - at the cost of waiting `within` before the single press fires (section 9, decision 4).
+when the rule says so (`"supersedes": ["urn:ngsi-ld:Rule:room-2-14-press"]`): a double press does not also fire
+the single press - at the cost of waiting `within` before the single press fires (section 8, decision 4).
 
 ### 3.2 `then` - actions
 
@@ -136,7 +136,7 @@ Values in an action may name the match: `"${press.entity}"`, `"${temp.avg}"`.
 
 Considered and not taken as the rule language (each a whole engine or tied to one): Esper EPL (Perseo's core,
 Java), Drools DRL (Java), OMG DMN / FEEL (decision tables - no time, no sequences), CloudEvents CESQL (filters
-only, no patterns), W3C RIF (no time), RSP-QL (RDF streams, SPARQL - heavy for a home hub), Home Assistant
+only, no patterns), W3C RIF (no time), RSP-QL (RDF streams, SPARQL - heavy for an edge gateway), Home Assistant
 automations and Node-RED flows (product formats). None is widely adopted for CEP.
 
 ## 5. The engine
@@ -149,7 +149,7 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 - **Windows** keep running aggregates (sum, count, min/max by a monotonic deque) - not every value.
 - **Entity state** for `if` and group targets: corCep keeps the watched attributes of the entities its rules name
   (from the notifications), not a copy of the broker.
-- **Actions** go out on an ordered queue per target entity: two actions on one lamp are never reordered.
+- **Actions** go out on an ordered queue per target entity: two actions on one light are never reordered.
 - **Threads**: one event loop (notifications, timers, the broker's answers); actions on the cor-libs' HTTP
   client, asynchronous.
 
@@ -160,34 +160,21 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 - The subscriptions: corCep's own (id prefix `urn:ngsi-ld:Subscription:corcep-`); at start the stale ones are
   removed, every 5 min any missing one is made again.
 - The broker away: actions are retried with back-off for `retryFor` (default 30 s), then dropped and counted -
-  a lamp switched minutes late is worse than not switched.
+  a light switched minutes late is worse than not switched.
 - Per rule, as attributes of the Rule entity (written at most every 10 s): `firedAt`, `fired` (count),
   `lastError`, `droppedMatches`. The app shows "what it does" and "when it last did it".
 
 ## 7. Security
 
 - corCep acts with its own identity: an ES256 key, a token with the roles the rules need (`ngsild-read`,
-  `ngsild-write`), the broker's JWK Set holding its public half - as corhome-rules does today.
+  `ngsild-write`), the broker's JWK Set holding its public half.
 - A rule acts with corCep's rights, so who may write a Rule entity decides who may act: rules are a protected
-  type in the broker's policy (a user may write rules only over entities they may write themselves - section 9,
+  type in the broker's policy (a user may write rules only over entities they may write themselves - section 8,
   decision 6).
 - Notifications come to a path holding a secret made at start; loopback, or TLS.
 - `http` actions: to an allow-list of hosts only.
 
-## 8. corhome-rules becomes corCep rules
-
-| corhome-rules (`/etc/corhome/rules.json`) | corCep |
-|---|---|
-| `when.entity`, `when.attribute` | an event |
-| `then.set` | `set` |
-| `then.toggle` | `toggle` |
-| `then.step` + `when.until` | `step` + `until` |
-| (not possible) | double press, guards, absence, windows, schedules, several actions, a room as the target |
-| the file, entities only shown | the entities ARE the rules; the file is an import |
-
-corhome-rules runs until corCep runs corHome's rules; then `hub/rules` goes, and corHome installs corCep.
-
-## 9. Decisions for KZ
+## 8. Decisions for KZ
 
 1. **The pattern language** - SQL:2016 concepts in JSON (this note), or our own smaller vocabulary.
 2. **Rules as entities in the same broker** (this note) or a separate store - the same broker means the same API,
