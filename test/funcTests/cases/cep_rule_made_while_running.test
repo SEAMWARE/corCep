@@ -1,0 +1,74 @@
+#
+# FILE            cep_rule_made_while_running.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# corCep started with no rules: only the Rule subscription. A Rule POSTed then: corCep reads the rules
+# again, makes the rule's subscription, and the rule fires - a 'set' of two attributes in one PATCH.
+#
+--NAME--
+A rule made while corCep runs applies at once - its subscription made, both its attributes set
+
+--TAGS--
+cep set reload
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. corCep started, no rules - the Rule subscription only"
+echo "========================================================="
+cepStart
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+cepSubs
+echo
+echo
+
+
+echo "02. The switch, the light, the rule - its subscription made"
+echo "==========================================================="
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:room-2-14", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}, "lowerPress": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}, "level": {"type": "Property", "value": 10}, "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-upper", "type": "Rule", "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"}}, "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"on": true, "level": 200}}]}}'
+subsAwait 1
+cepSubs
+echo
+echo
+
+
+echo "03. The upper button pressed - the light on, level 200"
+echo "======================================================"
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"upperPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Light:room-2-14-desk level 200
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. corCep started, no rules - the Rule subscription only
+=========================================================
+0 rules, 0 subscriptions
+urn:ngsi-ld:Subscription:corcep-rules
+
+
+02. The switch, the light, the rule - its subscription made
+===========================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+urn:ngsi-ld:Subscription:corcep-0
+urn:ngsi-ld:Subscription:corcep-rules
+
+
+03. The upper button pressed - the light on, level 200
+======================================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "level": 200, "mark": 0, "on": true, "type": "Light"}
+
+

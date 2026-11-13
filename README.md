@@ -89,10 +89,15 @@ starts a broker for the run - a coraine container (`quay.io/seamware/coraine:0.7
 network, port 4062 - and stops it at the end. Each test starts its own corCep and works in a tenant of its own,
 new on every run. Against another NGSI-LD broker: `CEP_BROKER_HOST=... CEP_BROKER_PORT=... corTest`.
 
-`make test` runs the older checks (`test/check.py`) against a broker already running (`BROKER_URL`, default
-`http://127.0.0.1:1026`): set, toggle (the same value twice), a rule made while running, a bad rule beside good
-ones, a disabled rule, a rule deleted, a notification without the secret. They move to corTest test cases one by
-one.
+| Test | |
+|---|---|
+| `cep_set_on_event` | a rule read at start: an update sets an attribute of another entity |
+| `cep_rule_made_while_running` | a Rule made while corCep runs applies at once; a `set` of two attributes |
+| `cep_toggle` | `toggle`; the same value reported again is an event too |
+| `cep_rule_left_out` | a rule that is not right is left out, with the reason; the others run |
+| `cep_rule_disabled` | `enabled: false` is not run |
+| `cep_rule_deleted` | a deleted rule no longer fires; a subscription no rule needs is deleted |
+| `cep_notify_secret` | notifications only on the listener's path with the secret |
 
 CI (`.github/workflows/ci.yml`) builds corCep against the cor libs' main and runs the functional tests on every
 pull request.

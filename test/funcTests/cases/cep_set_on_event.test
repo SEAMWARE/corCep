@@ -39,6 +39,7 @@ echo "02. corCep started - one rule, one subscription for it"
 echo "======================================================"
 cepStart
 cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+subsAwait 1                                      # the log line comes BEFORE the subscriptions are made
 echo
 echo
 

@@ -8,7 +8,7 @@
 #
 #   make                 the corCep binary (in this directory)
 #   make functest        build, and run the functional tests (corTest) against a coraine container it starts
-#   make test            build, and run test/check.py against a running broker (BROKER_URL, default http://127.0.0.1:1026)
+#   make test            the same as make functest
 #   make install         $(PREFIX)/bin/corCep (PREFIX=/usr/local; DESTDIR for packaging)
 #   make uninstall
 #   make clean
@@ -63,9 +63,6 @@ $(COR_ARCHIVES):
 	@echo "missing $@ - corCep builds against sibling checkouts of the cor-libs, built there (make in each), or COR_LIBS=<dir>"
 	@false
 
-test: corCep
-	test/run.sh
-
 #
 # functest - test/funcTests/cases/*.test, run by corTest (the cor stack's test runner: corLibs/bin, or
 # CORTEST=<path>), against ONE broker for the run - a coraine container on the host's network that
@@ -80,6 +77,8 @@ CORTEST_ARGS ?=
 functest: corCep
 	test/funcTests/broker.sh up
 	$(CORTEST) $(CORTEST_ARGS); rc=$$?; test/funcTests/broker.sh down; exit $$rc
+
+test: functest
 
 install: corCep
 	install -d $(DESTDIR)$(PREFIX)/bin

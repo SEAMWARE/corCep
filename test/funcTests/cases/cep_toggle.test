@@ -1,0 +1,71 @@
+#
+# FILE            cep_toggle.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# A button pressed twice reports the same value twice: each notification is an event, the value need not change.
+#
+--NAME--
+toggle: the boolean read and the other value written - the same value pressed again is an event too
+
+--TAGS--
+cep toggle
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light (off), the toggle rule"
+echo "================================================"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:room-2-14", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}, "lowerPress": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}, "level": {"type": "Property", "value": 10}, "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-lower", "type": "Rule", "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "lowerPress"}}, "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "toggle": "on"}]}}'
+cepStart
+subsAwait 1
+echo
+echo
+
+
+echo "02. lowerPress 1 - the light on"
+echo "==============================="
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"lowerPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Light:room-2-14-desk on true
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+echo
+echo
+
+
+echo "03. lowerPress 1 again, the same value - the light off"
+echo "======================================================"
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"lowerPress": {"type": "Property", "value": 1}}'
+attrAwait urn:ngsi-ld:Light:room-2-14-desk on false
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light (off), the toggle rule
+================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. lowerPress 1 - the light on
+===============================
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "level": 10, "mark": 0, "on": true, "type": "Light"}
+
+
+03. lowerPress 1 again, the same value - the light off
+======================================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "level": 10, "mark": 0, "on": false, "type": "Light"}
+
+

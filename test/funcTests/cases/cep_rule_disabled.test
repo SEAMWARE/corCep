@@ -1,0 +1,64 @@
+#
+# FILE            cep_rule_disabled.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Two rules on the same event: the enabled one sets 'level', the disabled one would set 'mark'. One notification feeds both,
+# so once the enabled rule has fired, the disabled one has had its chance: 'mark' still 0, and no 'fired' line for it.
+#
+--NAME--
+A rule with enabled false is not run - the enabled rule on the same event is
+
+--TAGS--
+cep rules
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, an enabled rule and a disabled one, corCep started"
+echo "============================================================================="
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:room-2-14", "type": "WallSwitch", "upperPress": {"type": "Property", "value": 0}, "lowerPress": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14-desk", "type": "Light", "on": {"type": "Property", "value": false}, "level": {"type": "Property", "value": 10}, "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-upper", "type": "Rule", "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"}}, "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"level": 200}}]}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:room-2-14-off", "type": "Rule", "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:room-2-14", "attribute": "upperPress"}}, "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:room-2-14-desk", "set": {"mark": 1}}]}, "enabled": {"type": "Property", "value": false}}'
+cepStart
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$"
+subsAwait 1                                      # the log line comes BEFORE the subscriptions are made
+echo
+echo
+
+
+echo "02. The upper button pressed - level 200, mark still 0; only the enabled rule fired"
+echo "==================================================================================="
+ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs '{"upperPress": {"type": "Property", "value": 1}}'
+cepAwaitLog "room-2-14-upper fired"
+entityKv urn:ngsi-ld:Light:room-2-14-desk
+grep -c "room-2-14-off" "$CEP_TEST_DIR/corCep.log"
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, an enabled rule and a disabled one, corCep started
+=============================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+1 rule, 1 subscription
+
+
+02. The upper button pressed - level 200, mark still 0; only the enabled rule fired
+===================================================================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
+rule urn:ngsi-ld:Rule:room-2-14-upper fired (urn:ngsi-ld:WallSwitch:room-2-14)
+{"id": "urn:ngsi-ld:Light:room-2-14-desk", "level": 200, "mark": 0, "on": false, "type": "Light"}
+0
+
+
