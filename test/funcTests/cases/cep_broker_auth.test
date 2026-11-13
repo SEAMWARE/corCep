@@ -12,9 +12,11 @@
 #   --token-command  a command printing the token - run at start; again before the token expires (its exp less
 #                    60 s); again when the broker answers 401 (the request then made once more)
 #
-# The broker: one of its own for this test (docker, port CEP_AUTH_PORT - 4063), an image with --https (CEP_AUTH_IMAGE:
-# 0.7.0 has none - main's build of 11-12 until a release has it). The token script counts its runs; with BAD_FIRST
-# its first run prints a token the broker refuses.
+# The broker: one of its own for this test - test/funcTests/broker.sh up starts it beside the main one (port
+# CEP_AUTH_PORT - 4063, an image with --https: CEP_AUTH_IMAGE) and makes its material in CEP_AUTH_DIR
+# (test/funcTests/hub): hub.example's certificate (cert.pem) and another (other.pem), corCep's signing key, the
+# JWK Set, token.py. The token script counts its runs; with BAD_FIRST its first run prints a token the broker
+# refuses.
 #
 --NAME--
 broker auth: --broker-cert pins the hub's own certificate; --token-command renews the token, and on a 401
@@ -24,60 +26,14 @@ cep auth
 
 --INIT--
 cepTestInit
-H="$CEP_TEST_DIR/hub"
-mkdir -p "$H"
-cd "$H"
-# the broker's certificate (hub.example - not 127.0.0.1) and another one
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout tls-key.pem -out cert.pem -days 2 \
-        -subj "/CN=hub.example" -addext "subjectAltName=DNS:hub.example" 2> /dev/null
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout other-key.pem -out other.pem -days 2 \
-        -subj "/CN=hub.example" -addext "subjectAltName=DNS:hub.example" 2> /dev/null
-# corCep's signing key and its JWK Set
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out sign.pem 2> /dev/null
-cat > token.py <<'EOF'
-# token.py <dir> <exp seconds> - an ES256 JWT for the test broker, signed with <dir>/sign.pem; --jwks: the JWK Set
-import base64, json, os, subprocess, sys, time
-d = sys.argv[1]
-b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
-der = subprocess.run(["openssl", "pkey", "-in", f"{d}/sign.pem", "-pubout", "-outform", "DER"], capture_output=True, check=True).stdout
-x, y = der[-64:-32], der[-32:]
-jwk = {"kty": "EC", "crv": "P-256", "x": b64(x), "y": b64(y), "kid": "cep-test", "alg": "ES256", "use": "sig"}
-if sys.argv[2] == "--jwks":
-    print(json.dumps({"keys": [jwk]}))
-    sys.exit(0)
-n = int(open(f"{d}/runs").read()) + 1 if os.path.exists(f"{d}/runs") else 1
-if not os.environ.get("NOCOUNT"):                  # the test's own requests are not counted
-    open(f"{d}/runs", "w").write(str(n))
-if n == 1 and os.environ.get("BAD_FIRST"):
-    print("not-a-token")
-    sys.exit(0)
-now = int(time.time())
-head = b64(json.dumps({"alg": "ES256", "typ": "JWT", "kid": "cep-test"}).encode())
-body = b64(json.dumps({"iss": "cep-test", "sub": "corcep", "iat": now, "exp": now + int(sys.argv[2]),
-                       "realm_access": {"roles": ["ngsild-read", "ngsild-write"]}}).encode())
-sig = subprocess.run(["openssl", "dgst", "-sha256", "-sign", f"{d}/sign.pem"], input=f"{head}.{body}".encode(),
-                     capture_output=True, check=True).stdout
-# DER ECDSA-Sig-Value -> r || s, 32 bytes each
-i = 2 if sig[1] < 0x80 else 3
-rl = sig[i + 1]; r = sig[i + 2:i + 2 + rl]; j = i + 2 + rl; sl = sig[j + 1]; s = sig[j + 2:j + 2 + sl]
-fix = lambda v: v[-32:].rjust(32, b"\0")
-print(f"{head}.{body}.{b64(fix(r) + fix(s))}")
-EOF
-python3 -I token.py "$H" --jwks > jwks.json
-chmod 644 *.pem jwks.json
+H="$CEP_AUTH_DIR"
 P="${CEP_AUTH_PORT:-4063}"
-docker rm -f "corcep-functest-auth-$P" > /dev/null 2>&1
-docker run -d --rm --name "corcep-functest-auth-$P" --network host -v "$H:/hub:ro" "${CEP_AUTH_IMAGE:-quay.io/seamware/coraine:0.7.0-post-2026-11-12-9032b724}" \
-       --database ramDB --troe none --port "$P" --https --key /hub/tls-key.pem --cert /hub/cert.pem \
-       --auth oidc --oidcIssuer cep-test --oidcJwks /hub/jwks.json --oidcAnyTenant > /dev/null
-for ((i = 0; i < 150; i++)); do
-  [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$P/ngsi-ld/v1/types")" = 401 ] && break
-  sleep 0.1
-done
-[ "$i" -lt 150 ] || { echo "the test's broker (https, oidc) does not answer on $P:" >&2; docker logs "corcep-functest-auth-$P" 2>&1 | tail -5 >&2; }
+rm -f "$H/runs"
+[ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$P/ngsi-ld/v1/types")" = 401 ] || \
+  echo "the test's broker (https, oidc) does not answer on $P - test/funcTests/broker.sh up starts it" >&2
 
 --RUN--
-H="$CEP_TEST_DIR/hub"
+H="$CEP_AUTH_DIR"
 P="${CEP_AUTH_PORT:-4063}"
 B="https://127.0.0.1:$P"
 hub() {  # hub <method> <path> [payload] - with a token of its own (NOCOUNT: not one of corCep's runs)
@@ -152,7 +108,7 @@ echo
 
 --TEARDOWN--
 cepStop
-docker rm -f "corcep-functest-auth-${CEP_AUTH_PORT:-4063}" > /dev/null 2>&1
+rm -f "$CEP_AUTH_DIR/runs"
 
 --EXPECT--
 01. The broker: HTTPS (hub.example's certificate), tokens only - a switch, a light, a rule

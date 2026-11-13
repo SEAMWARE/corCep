@@ -315,7 +315,7 @@ corCep --broker https://localhost:1026 --broker-cert /etc/hub/tls/cert.pem --tok
 
 Without `--broker-cert`, an `https://` broker's certificate is checked against the system's CA store and its name.
 
-The test `cep_broker_auth` runs both against a broker of its own (HTTPS, OIDC with a JWK Set file).
+The test `cep_broker_auth` runs both against a broker of its own (HTTPS, OIDC with a JWK Set file - `broker.sh up` starts it).
 
 ## How it talks to the broker
 
@@ -338,6 +338,11 @@ The functional tests, `test/funcTests/cases/*.test`, run by corTest (the cor sta
 starts a broker for the run - a coraine container (`quay.io/seamware/coraine:0.7.0`, ramDB) on the host's
 network, port 4062 - and stops it at the end. Each test starts its own corCep and works in a tenant of its own,
 new on every run. Against another NGSI-LD broker: `CEP_BROKER_HOST=... CEP_BROKER_PORT=... corTest`.
+
+A second broker, for `cep_broker_auth` only, as a home hub runs one: HTTPS with a self-signed certificate for
+another name and OIDC tokens only - port 4063, an image with `--https` (`CEP_AUTH_IMAGE`). `make functest` starts it
+too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JWK Set and token script in
+`test/funcTests/hub/` (`CEP_AUTH_DIR`); `down` removes them.
 
 | Test | |
 |---|---|
