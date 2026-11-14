@@ -59,9 +59,9 @@ char* urlEncode(CorAlloc* allocP, const char* s)
 
 // -----------------------------------------------------------------------------
 //
-// brokerRequest - <broker>/ngsi-ld/v1<path>[?query], bodyP rendered as JSON; the answer parsed
+// requestOnce - <broker>/ngsi-ld/v1<path>[?query], bodyP rendered as JSON; the answer parsed
 //
-bool brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP)
+static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP)
 {
   CorRestKeyValue  headers[5];
   int              headerCount = 0;
@@ -102,11 +102,13 @@ bool brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const c
     ++headerCount;
   }
 
-  if (cep.token != NULL)
+  char* token = tokenGet(allocP);
+
+  if (token != NULL)
   {
-    int alen = strlen(cep.token) + 8;
+    int alen = strlen(token) + 8;
     auth     = corAlloc(allocP, alen);
-    snprintf(auth, alen, "Bearer %s", cep.token);
+    snprintf(auth, alen, "Bearer %s", token);
     headers[headerCount].key   = (char*) "Authorization";
     headers[headerCount].value = auth;
     ++headerCount;
@@ -157,6 +159,26 @@ bool brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const c
 
   corRestClientMultiDestroy(multiP);
   return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// brokerRequest - <broker>/ngsi-ld/v1<path>[?query], bodyP rendered as JSON; the answer parsed. A 401 with a token
+// that can be renewed (--token-command): renewed, the request once more
+//
+bool brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP)
+{
+  bool ok = requestOnce(allocP, verb, path, query, bodyP, respP);
+
+  if ((ok == true) && (respP->status == 401) && (tokenRefused() == true))
+  {
+    logLine("the broker refused the token (401) - a new one, the request again");
+    return requestOnce(allocP, verb, path, query, bodyP, respP);
+  }
+
+  return ok;
 }
 
 

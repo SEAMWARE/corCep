@@ -1,0 +1,147 @@
+#
+# FILE            cep_broker_auth.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# corCep against a broker as a home hub runs it: HTTPS with a self-signed certificate whose name is not the one
+# corCep uses (hub.example, reached at 127.0.0.1), and only short-lived tokens (OIDC, ES256, a JWK Set file).
+#
+#   --broker-cert    the broker's own certificate trusted as it is - instead of the CA store and the host name;
+#                    another certificate: the connection refused
+#   --token-command  a command printing the token - run at start; again before the token expires (its exp less
+#                    60 s); again when the broker answers 401 (the request then made once more)
+#
+# The broker: one of its own for this test - test/funcTests/broker.sh up starts it beside the main one (port
+# CEP_AUTH_PORT - 4063, an image with --https: CEP_AUTH_IMAGE) and makes its material in CEP_AUTH_DIR
+# (test/funcTests/hub): hub.example's certificate (cert.pem) and another (other.pem), corCep's signing key, the
+# JWK Set, token.py. The token script counts its runs; with BAD_FIRST its first run prints a token the broker
+# refuses.
+#
+--NAME--
+broker auth: --broker-cert pins the hub's own certificate; --token-command renews the token, and on a 401
+
+--TAGS--
+cep auth
+
+--INIT--
+cepTestInit
+H="$CEP_AUTH_DIR"
+P="${CEP_AUTH_PORT:-4063}"
+rm -f "$H/runs"
+[ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$P/ngsi-ld/v1/types")" = 401 ] || \
+  echo "the test's broker (https, oidc) does not answer on $P - test/funcTests/broker.sh up starts it" >&2
+
+--RUN--
+H="$CEP_AUTH_DIR"
+P="${CEP_AUTH_PORT:-4063}"
+B="https://127.0.0.1:$P"
+hub() {  # hub <method> <path> [payload] - with a token of its own (NOCOUNT: not one of corCep's runs)
+  local t; t=$(NOCOUNT=1 python3 -I "$H/token.py" "$H" 300)
+  curl -sk -o /dev/null -w "$1 $2: %{http_code}\n" -X "$1" -H "Authorization: Bearer $t" -H "NGSILD-Tenant: $(cepTenant)" \
+       ${3:+-H "Content-Type: application/json" -d "$3"} "$B/ngsi-ld/v1$2"
+}
+cepHub() {  # cepHub [options...] - corCep against the test's own broker
+  "$CEP_BIN" --broker "$B" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" > "$CEP_TEST_DIR/corCep.log" 2>&1 &
+  echo $! > "$CEP_TEST_DIR/corCep.pid"
+}
+
+echo "01. The broker: HTTPS (hub.example's certificate), tokens only - a switch, a light, a rule"
+echo "========================================================================================="
+curl -sk -o /dev/null -w "no token: %{http_code}\n" "$B/ngsi-ld/v1/types"
+hub POST /entities '{"id": "urn:ngsi-ld:WallSwitch:hall", "type": "WallSwitch", "press": {"type": "Property", "value": 0}}'
+hub POST /entities '{"id": "urn:ngsi-ld:Light:hall", "type": "Light", "on": {"type": "Property", "value": false}}'
+hub POST /entities '{"id": "urn:ngsi-ld:Rule:hall", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:hall", "attribute": "press"}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:hall", "toggle": "on"}]}}'
+echo
+echo
+
+
+echo "02. Another certificate pinned: the connection refused - corCep does not start"
+echo "==============================================================================="
+cepHub --broker-cert "$H/other.pem" --token-command "python3 -I $H/token.py $H 300"
+for ((i = 0; i < 50; i++)); do kill -0 "$(cat "$CEP_TEST_DIR/corCep.pid")" 2> /dev/null || break; sleep 0.1; done
+grep -o "GET /subscriptions: .*" "$CEP_TEST_DIR/corCep.log"
+kill -0 "$(cat "$CEP_TEST_DIR/corCep.pid")" 2> /dev/null && echo "corCep still running" || echo "corCep exited"
+cepStop                                          # stopped by its pid, whatever happened
+rm -f "$H/runs"
+echo
+echo
+
+
+echo "03. The broker's certificate pinned, its first token refused (401): a new one, the rules read"
+echo "=============================================================================================="
+BAD_FIRST=1 cepHub --broker-cert "$H/cert.pem" --token-command "python3 -I $H/token.py $H 62"
+cepAwaitLog " rules\?, [0-9]* subscriptions\?$" 10
+cepAwaitLog "refused the token" 1
+echo "token runs: $(cat "$H/runs")"
+echo
+echo
+
+
+echo "04. The switch pressed: the light toggled - through the broker, with corCep's token"
+echo "==================================================================================="
+hub PATCH /entities/urn:ngsi-ld:WallSwitch:hall/attrs '{"press": {"type": "Property", "value": 1}}'
+cepAwaitLog "fired" 5
+for ((i = 0; i < 50; i++)); do
+  t=$(NOCOUNT=1 python3 -I "$H/token.py" "$H" 300)
+  curl -sk -H "Authorization: Bearer $t" -H "NGSILD-Tenant: $(cepTenant)" "$B/ngsi-ld/v1/entities/urn:ngsi-ld:Light:hall?options=keyValues" | grep -q '"on": *true' && break
+  sleep 0.1
+done
+echo "the light: $(curl -sk -H "Authorization: Bearer $t" -H "NGSILD-Tenant: $(cepTenant)" "$B/ngsi-ld/v1/entities/urn:ngsi-ld:Light:hall?options=keyValues" | grep -o '"on": *[a-z]*')"
+echo
+echo
+
+
+echo "05. The token's exp 62 s: renewed 60 s before - the next request runs the command again"
+echo "======================================================================================="
+runs=$(cat "$H/runs")
+sleep 2.5
+hub PATCH /entities/urn:ngsi-ld:WallSwitch:hall/attrs '{"press": {"type": "Property", "value": 2}}' > /dev/null
+for ((i = 0; i < 50; i++)); do [ "$(grep -c "fired" "$CEP_TEST_DIR/corCep.log")" -ge 2 ] && break; sleep 0.1; done
+echo "fired: $(grep -c "fired" "$CEP_TEST_DIR/corCep.log")"
+[ "$(cat "$H/runs")" -gt "$runs" ] && echo "the command ran again" || echo "the command did NOT run again ($runs)"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+rm -f "$CEP_AUTH_DIR/runs"
+
+--EXPECT--
+01. The broker: HTTPS (hub.example's certificate), tokens only - a switch, a light, a rule
+=========================================================================================
+no token: 401
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. Another certificate pinned: the connection refused - corCep does not start
+===============================================================================
+GET /subscriptions: TLS with 127.0.0.1 failed
+corCep exited
+
+
+03. The broker's certificate pinned, its first token refused (401): a new one, the rules read
+==============================================================================================
+1 rule, 1 subscription
+the broker refused the token (401) - a new one, the request again
+token runs: 2
+
+
+04. The switch pressed: the light toggled - through the broker, with corCep's token
+===================================================================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:hall/attrs: 204
+rule urn:ngsi-ld:Rule:hall fired (urn:ngsi-ld:WallSwitch:hall)
+the light: "on":true
+
+
+05. The token's exp 62 s: renewed 60 s before - the next request runs the command again
+=======================================================================================
+fired: 2
+the command ran again
+
+

@@ -22,6 +22,7 @@ CEP_BROKER_PORT="${CEP_BROKER_PORT:-4062}"
 CEP_PORT="${CEP_PORT:-7620}"
 CEP_BIN="${CEP_BIN:-${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}/corCep}"
 CEP_TEST_DIR="${CEP_TEST_DIR:-/tmp/corcep-functest}"
+CEP_AUTH_DIR="${CEP_AUTH_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hub}"   # broker.sh up: the auth broker's material
 
 
 # -----------------------------------------------------------------------------

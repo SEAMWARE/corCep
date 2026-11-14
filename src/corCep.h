@@ -30,7 +30,6 @@ typedef struct CepSession
 {
   const char*  broker;                           // http://host:port, no trailing slash
   const char*  tenant;                           // NULL: the broker's default tenant
-  const char*  token;                            // NULL: no Authorization
   const char*  notifyBase;                       // the URL the broker notifies: <notifyBase>/notify/<secret>/<n>
   char         secret[33];                       // in every notification path - nothing else can send an event
   unsigned short port;                           // the listener's port
@@ -239,6 +238,11 @@ extern long long patternsDroppedValues(const char* ruleId);                   //
 extern bool   cronParse(const char* text, CepCron* cP, char* why, int whyLen);
 extern time_t scheduleNext(const CepRule* ruleP, time_t after);              // the next fire after <after>; 0: never
 extern char*  scheduleText(time_t t, char* buf, int bufLen);                  // local, with the offset
+
+// token.c - the bearer token: fixed (--token-env) or a command's (--token-command), renewed
+extern bool  tokenInit(const char* envVar, const char* command, char* why, int whyLen);
+extern char* tokenGet(CorAlloc* allocP);
+extern bool  tokenRefused(void);
 
 extern void logLine(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
