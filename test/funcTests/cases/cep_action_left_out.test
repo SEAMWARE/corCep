@@ -57,7 +57,7 @@ rule urn:ngsi-ld:Rule:d-until-pattern left out: 'until' names 'release', an even
 rule urn:ngsi-ld:Rule:e-until-unknown left out: 'until' names 'letGo' - no such event in 'events'
 rule urn:ngsi-ld:Rule:f-step-by-0 left out: 'step' needs 'attribute' and 'by' - a number, not 0
 rule urn:ngsi-ld:Rule:g-step-too-fast left out: 'step' needs 'every' - an ISO 8601 duration, PT0.05S or more
-rule urn:ngsi-ld:Rule:h-if-no-q left out: 'if' - { "entity" or "type", "q" }, or a list of them
+rule urn:ngsi-ld:Rule:h-if-no-q left out: 'if' - { "entity" or "type", "q" }, { "all": [...] }, { "any": [...] }, or a list of them
 0 rules, 0 subscriptions
 
 
