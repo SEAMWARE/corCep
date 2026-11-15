@@ -207,4 +207,4 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
    group targets, the Rule entity statistics. Windows, schedules, `http` and `notify` in v2.
 6. **Who may write a rule** - any user with write access to the targets, or an admin role only.
 7. **ETSI** - the rule model as an NGSI-LD proposal (private material until decided).
-8. **The repo** - `SEAMWARE/corCep`, private until v1 (decided 2026-11-13); licence for v1 (coraine's?).
+8. **The repo** - `SEAMWARE/corCep`, private until v1 (decided 2026-11-13); licence Apache 2.0, as coraine (KZ 2026-11-15).

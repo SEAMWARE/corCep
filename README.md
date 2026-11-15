@@ -382,3 +382,8 @@ event fires on every one, and corCep feeds every rule of an event, the patterns 
 
 CI (`.github/workflows/ci.yml`) builds corCep against the cor libs' main and runs the functional tests on every
 pull request.
+
+## License
+
+corCep is licensed under the [Apache License 2.0](LICENSE) - Copyright 2026 Seamware.
+Every source file carries an `SPDX-License-Identifier`.
