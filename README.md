@@ -9,7 +9,8 @@ It works with any NGSI-LD broker: the events come as notifications of NGSI-LD su
 out as NGSI-LD requests.
 
 **Status: P2.5** - named events; patterns `any`, `seq`, `all`, `repeat`, `absent`, `window`, `supersedes`;
-schedules `cron` and `at` (a clock time, sunrise, sunset); `where` filters; `if` conditions on other entities;
+schedules `cron` and `at` (a clock time, sunrise, sunset); `where` filters; `if` conditions on other entities -
+`all` / `any` groups, nested;
 `set`, `toggle` and `step` (... `until`) actions, on one entity or a group; rule statistics. `/dry-run` comes next.
 
 ## Build
@@ -258,6 +259,32 @@ occupied":
 fired, not counted, and the log says so (`'if' occupied==true does not hold - not fired`). An error asking the
 broker: taken as not holding, logged.
 
+**Groups** - AND, OR and parentheses across entities. A condition is a leaf as above, or a group:
+
+| | holds when |
+|---|---|
+| `{ "all": [ <condition>, ... ] }` | every one holds - asked in order, stopped at the first that does not |
+| `{ "any": [ <condition>, ... ] }` | one holds - asked in order, stopped at the first that does |
+| `[ <condition>, ... ]` | as `all` |
+
+Groups nest (16 deep at most). "The door opens, and it is dark, and (the alarm is off or someone is in)":
+
+```json
+"when": { "type": "JsonProperty", "json": {
+  "entity": "urn:ngsi-ld:DoorSensor:front", "attribute": "contact", "where": "contact==false",
+  "if": { "all": [
+    { "entity": "urn:ngsi-ld:LightSensor:hall", "q": "illuminance<20" },
+    { "any": [
+      { "entity": "urn:ngsi-ld:Alarm:hq",    "q": "state==\"off\"" },
+      { "entity": "urn:ngsi-ld:Building:hq", "q": "occupied==true" } ] } ] }
+}}
+```
+
+The log names what did not hold: a leaf by its q, a group in words - `'if' any(state=="off" | occupied==true) does
+not hold`. One condition within one entity is the q's own: `illuminance<20;occupied==true`, `a==1|b==2`, `(...)`.
+Left out, with the reason: an empty group, `all` and `any` in one object, a group with other members
+(`entity`, `q`, ...).
+
 `if` is asked of the broker, not watched: corCep keeps no copy of the other entity, and its updates are not events.
 
 ## Statistics
@@ -367,6 +394,7 @@ too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JW
 | `cep_target_group` | `type` + `q` sets the room's lights only; `toggle` on a group turns each light the other way |
 | `cep_action_step` | `step` while held; `until` (the release) stops it; held on, it stops at `max`; `for` stops it |
 | `cep_rule_if` | `if` not holding: not fired, logged; holding: fired |
+| `cep_rule_if_groups` | `all` with an `any` inside: the `all` stopped at its first not holding, the `any` holding by either member; `all` + `any` in one object left out |
 | `cep_action_left_out` | actions and conditions that are not right, each with the reason |
 | `cep_pattern_window` | `avg` and `max`: fired when the bounds start to hold, once; again after the window empties; a value not a number |
 | `cep_pattern_window_expire` | a value leaving the window fires a rule with no event; `count` per entity for a type |

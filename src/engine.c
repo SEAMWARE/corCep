@@ -578,6 +578,62 @@ static bool condHolds(CorAlloc* allocP, CepRule* ruleP, CepCondition* cP)
 
 // -----------------------------------------------------------------------------
 //
+// condFailing - a condition, leaf or group: NULL when it holds, else the condition that does not - for an 'all'
+// its first member that does not hold (the rest not asked), for an 'any' the group itself (each asked until one
+// holds)
+//
+static CepCondition* condFailing(CorAlloc* allocP, CepRule* ruleP, CepCondition* cP)
+{
+  if (cP->kind == CondLeaf)
+    return (condHolds(allocP, ruleP, cP) == true) ? NULL : cP;
+
+  for (int ix = 0; ix < cP->kids; ix++)
+  {
+    CepCondition* failP = condFailing(allocP, ruleP, &cP->kidV[ix]);
+
+    if ((cP->kind == CondAll) && (failP != NULL))
+      return failP;
+    if ((cP->kind == CondAny) && (failP == NULL))
+      return NULL;
+  }
+
+  return (cP->kind == CondAll) ? NULL : cP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// condText - a condition in words, for the log: a leaf its q; a group "all(a; b)", "any(a | b)"
+//
+static void condText(CepCondition* cP, char* buf, int bufLen)
+{
+  if (cP->kind == CondLeaf)
+  {
+    snprintf(buf, bufLen, "%s", cP->q);
+    return;
+  }
+
+  int len = snprintf(buf, bufLen, "%s(", (cP->kind == CondAll) ? "all" : "any");
+
+  for (int ix = 0; (ix < cP->kids) && (len < bufLen - 1); ix++)
+  {
+    if (ix > 0)
+      len += snprintf(&buf[len], bufLen - len, "%s", (cP->kind == CondAll) ? "; " : " | ");
+    if (len < bufLen - 1)
+    {
+      condText(&cP->kidV[ix], &buf[len], bufLen - len);
+      len += strlen(&buf[len]);
+    }
+  }
+  if (len < bufLen - 1)
+    snprintf(&buf[len], bufLen - len, ")");
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // nowIso - the time, UTC, ISO 8601 with milliseconds
 //
 static void nowIso(char* buf, int bufLen)
@@ -722,9 +778,13 @@ static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
 
   for (int ix = 0; ix < ruleP->conds; ix++)
   {
-    if (condHolds(allocP, ruleP, &ruleP->condV[ix]) == false)
+    CepCondition* failP = condFailing(allocP, ruleP, &ruleP->condV[ix]);
+
+    if (failP != NULL)
     {
-      logLine("rule %s: 'if' %s does not hold - not fired (%s)", ruleP->id, ruleP->condV[ix].q, entity);
+      char text[512];
+      condText(failP, text, sizeof(text));
+      logLine("rule %s: 'if' %s does not hold - not fired (%s)", ruleP->id, text, entity);
       return;
     }
   }

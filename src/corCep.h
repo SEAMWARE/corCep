@@ -84,11 +84,21 @@ typedef struct CepAction
   int            until;                          // Step: the event that stops it, an index into the rule's untilV; -1: none
 } CepAction;
 
-typedef struct CepCondition                      // holds if the broker has an entity that matches
+typedef enum CepCondKind
 {
-  char*  entity;                                 // one entity ...
-  char*  type;                                   // ... or any entity of a type
-  char*  q;                                      // the NGSI-LD q it must match
+  CondLeaf,                                      // holds if the broker has an entity that matches
+  CondAll,                                       // every one of kidV holds (a JSON list, or { "all": [...] })
+  CondAny                                        // one of kidV holds ({ "any": [...] })
+} CepCondKind;
+
+typedef struct CepCondition
+{
+  CepCondKind           kind;
+  char*                 entity;                  // Leaf: one entity ...
+  char*                 type;                    // ... or any entity of a type
+  char*                 q;                       // ... the NGSI-LD q it must match
+  struct CepCondition*  kidV;                    // All, Any: the conditions - leaves or groups
+  int                   kids;
 } CepCondition;
 
 typedef struct CepEvent
@@ -178,7 +188,7 @@ typedef struct CepRule
   int             decls;
   CepEvent*       untilV;                        // the events that stop a step - watched, never fire the rule
   int             untils;
-  CepCondition*   condV;                         // 'if': every one must hold when the pattern matches
+  CepCondition*   condV;                         // 'if': every one must hold when the pattern matches - each a leaf or a group
   int             conds;
   CepAction*      actionV;
   int             actions;

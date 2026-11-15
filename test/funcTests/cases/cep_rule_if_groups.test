@@ -1,0 +1,130 @@
+#
+# FILE            cep_rule_if_groups.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# 'if' groups: { "all": [...] } and { "any": [...] }, nested - "it is dark AND (the alarm off OR someone in)". An 'all'
+# stops at its first member that does not hold, an 'any' at the first that holds; the log names what did not hold.
+# A group that is not right (both "all" and "any") leaves its rule out, with the reason; the good rule runs.
+#
+--NAME--
+if groups: all and any, nested - the rule fires only when the whole condition holds
+
+--TAGS--
+cep if
+
+--INIT--
+cepTestInit
+
+--RUN--
+echo "01. The switch, the light, the light sensor (bright), the alarm (armed), the building (empty), a rule with groups, a bad rule; corCep started"
+echo "================================================================================================================================="
+SW=urn:ngsi-ld:WallSwitch:hall
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"upperPress\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:hall", "type": "Light", "on": {"type": "Property", "value": false}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:LightSensor:hall", "type": "LightSensor", "illuminance": {"type": "Property", "value": 200}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Alarm:hq", "type": "Alarm", "state": {"type": "Property", "value": "armed"}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Building:hq", "type": "Building", "occupied": {"type": "Property", "value": false}}'
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:hall-dark\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"upperPress\",
+    \"if\": {\"all\": [ {\"entity\": \"urn:ngsi-ld:LightSensor:hall\", \"q\": \"illuminance<20\"},
+                        {\"any\": [ {\"entity\": \"urn:ngsi-ld:Alarm:hq\", \"q\": \"state==\\\"off\\\"\"},
+                                    {\"entity\": \"urn:ngsi-ld:Building:hq\", \"q\": \"occupied==true\"} ]} ]}}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"urn:ngsi-ld:Light:hall\", \"toggle\": \"on\"}]}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:hall-bad\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"upperPress\",
+    \"if\": {\"all\": [ {\"entity\": \"urn:ngsi-ld:Building:hq\", \"q\": \"occupied==true\"} ], \"any\": [ {\"entity\": \"urn:ngsi-ld:Alarm:hq\", \"q\": \"state==\\\"off\\\"\"} ]}}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"urn:ngsi-ld:Light:hall\", \"set\": {\"on\": false}}]}}"
+cepStart
+cepAwaitLog "hall-bad left out"
+subsAwait 1
+echo
+echo
+
+
+echo "02. Pressed, bright - the 'all' stops at the light sensor: not fired"
+echo "===================================================================="
+press $SW upperPress
+cepAwaitLog "illuminance<20 does not hold"
+echo "hall-dark: $(firedCount hall-dark)"
+echo
+echo
+
+
+echo "03. Dark, the alarm armed and nobody in - the 'any' holds for neither: not fired"
+echo "================================================================================"
+attrSet urn:ngsi-ld:LightSensor:hall illuminance 5
+press $SW upperPress
+cepAwaitLog "'if' any("
+echo "hall-dark: $(firedCount hall-dark)"
+entityKv urn:ngsi-ld:Light:hall
+echo
+echo
+
+
+echo "04. Someone in (the alarm still armed) - the 'any' holds by its second: fired, the light on"
+echo "==========================================================================================="
+attrSet urn:ngsi-ld:Building:hq occupied true
+press $SW upperPress
+firedAwait hall-dark 1
+attrAwait urn:ngsi-ld:Light:hall on true
+entityKv urn:ngsi-ld:Light:hall
+echo
+echo
+
+
+echo "05. Nobody in, the alarm off - the 'any' holds by its first: fired again, the light off"
+echo "======================================================================================"
+attrSet urn:ngsi-ld:Building:hq occupied false
+attrSet urn:ngsi-ld:Alarm:hq state '"off"'
+press $SW upperPress
+firedAwait hall-dark 2
+attrAwait urn:ngsi-ld:Light:hall on false
+entityKv urn:ngsi-ld:Light:hall
+echo
+echo
+
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. The switch, the light, the light sensor (bright), the alarm (armed), the building (empty), a rule with groups, a bad rule; corCep started
+=================================================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+rule urn:ngsi-ld:Rule:hall-bad left out: 'if' - "all" and "any" in one condition: one of them, the other a condition inside it
+
+
+02. Pressed, bright - the 'all' stops at the light sensor: not fired
+====================================================================
+rule urn:ngsi-ld:Rule:hall-dark: 'if' illuminance<20 does not hold - not fired (urn:ngsi-ld:WallSwitch:hall)
+hall-dark: 0
+
+
+03. Dark, the alarm armed and nobody in - the 'any' holds for neither: not fired
+================================================================================
+rule urn:ngsi-ld:Rule:hall-dark: 'if' any(state=="off" | occupied==true) does not hold - not fired (urn:ngsi-ld:WallSwitch:hall)
+hall-dark: 0
+{"id": "urn:ngsi-ld:Light:hall", "on": false, "type": "Light"}
+
+
+04. Someone in (the alarm still armed) - the 'any' holds by its second: fired, the light on
+===========================================================================================
+hall-dark: 1
+{"id": "urn:ngsi-ld:Light:hall", "on": true, "type": "Light"}
+
+
+05. Nobody in, the alarm off - the 'any' holds by its first: fired again, the light off
+======================================================================================
+hall-dark: 2
+{"id": "urn:ngsi-ld:Light:hall", "on": false, "type": "Light"}
+
+

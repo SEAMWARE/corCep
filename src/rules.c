@@ -855,7 +855,116 @@ static bool actionParse(CorAlloc* allocP, CepRule* ruleP, CorNode* aP, CepAction
 
 // -----------------------------------------------------------------------------
 //
-// condParse - 'if': { "entity": <id> | "type": <type>, "q": <q> }, or a list of them - each must hold
+// condGroup - the members of a group (a JSON list, or the list of "all" / "any") into condP->kidV
+//
+static bool condNode(CorAlloc* allocP, CorNode* cP, CepCondition* condP, int depth, char* why, int whyLen);
+
+static bool condGroup(CorAlloc* allocP, CorNode* listP, CepCondition* condP, int depth, char* why, int whyLen)
+{
+  condP->kids = 0;
+  condP->kidV = (CepCondition*) corAlloc(allocP, count(listP) * sizeof(CepCondition));
+
+  for (CorNode* kP = listP->value.head; kP != NULL; kP = kP->next)
+  {
+    if (condNode(allocP, kP, &condP->kidV[condP->kids], depth + 1, why, whyLen) == false)
+      return false;
+    condP->kids++;
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// condNode - one condition: a leaf { "entity" | "type", "q" }, a group { "all": [...] } / { "any": [...] }, or a
+// list (all of it) - groups nest
+//
+static bool condNode(CorAlloc* allocP, CorNode* cP, CepCondition* condP, int depth, char* why, int whyLen)
+{
+  memset(condP, 0, sizeof(*condP));
+
+  if (depth > 16)
+  {
+    snprintf(why, whyLen, "'if' - groups nested more than 16 deep");
+    return false;
+  }
+
+  if (cP->type == CorArray)
+  {
+    if (cP->value.head == NULL)
+    {
+      snprintf(why, whyLen, "'if' - an empty list inside a condition");
+      return false;
+    }
+    condP->kind = CondAll;
+    return condGroup(allocP, cP, condP, depth, why, whyLen);
+  }
+
+  if (cP->type != CorObject)
+  {
+    snprintf(why, whyLen, "'if' - { \"entity\" or \"type\", \"q\" }, { \"all\": [...] }, { \"any\": [...] }, or a list of them");
+    return false;
+  }
+
+  CorNode* allP = corTreeLookup(cP, "all");
+  CorNode* anyP = corTreeLookup(cP, "any");
+  char*    entity = str(cP, "entity");
+  char*    type   = str(cP, "type");
+  char*    q      = str(cP, "q");
+
+  if ((allP != NULL) || (anyP != NULL))
+  {
+    const char* name = (allP != NULL) ? "all" : "any";
+    CorNode*    lP   = (allP != NULL) ? allP : anyP;
+
+    if ((allP != NULL) && (anyP != NULL))
+    {
+      snprintf(why, whyLen, "'if' - \"all\" and \"any\" in one condition: one of them, the other a condition inside it");
+      return false;
+    }
+    if ((entity != NULL) || (type != NULL) || (q != NULL) || (count(cP) != 1))
+    {
+      snprintf(why, whyLen, "'if' - \"%s\" with other members: a group holds its conditions only", name);
+      return false;
+    }
+    if ((lP->type != CorArray) || (lP->value.head == NULL))
+    {
+      snprintf(why, whyLen, "'if' - \"%s\" is a list of one condition at least", name);
+      return false;
+    }
+    condP->kind = (allP != NULL) ? CondAll : CondAny;
+    return condGroup(allocP, lP, condP, depth, why, whyLen);
+  }
+
+  if (((entity == NULL) && (type == NULL)) || (q == NULL))
+  {
+    snprintf(why, whyLen, "'if' - { \"entity\" or \"type\", \"q\" }, { \"all\": [...] }, { \"any\": [...] }, or a list of them");
+    return false;
+  }
+  if (type == NULL)
+    type = idType(allocP, entity);
+  if (type == NULL)
+  {
+    snprintf(why, whyLen, "'if' names an entity whose id holds no type (urn:ngsi-ld:<type>:...) - give 'type' too");
+    return false;
+  }
+
+  condP->kind   = CondLeaf;
+  condP->entity = (entity != NULL) ? corAllocStrdup(allocP, entity) : NULL;
+  condP->type   = corAllocStrdup(allocP, type);
+  condP->q      = corAllocStrdup(allocP, q);
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// condParse - 'if': a condition (condNode), or a list of them - each must hold. A condition is a leaf
+// { "entity" | "type", "q" } or a group { "all": [...] } / { "any": [...] }, groups nested in groups
 //
 static bool condParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* why, int whyLen)
 {
@@ -869,27 +978,9 @@ static bool condParse(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* wh
 
   for (CorNode* cP = (ifP->type == CorArray) ? ifP->value.head : ifP; cP != NULL; cP = (ifP->type == CorArray) ? cP->next : NULL)
   {
-    char* entity = (cP->type == CorObject) ? str(cP, "entity") : NULL;
-    char* type   = (cP->type == CorObject) ? str(cP, "type")   : NULL;
-    char* q      = (cP->type == CorObject) ? str(cP, "q")      : NULL;
-
-    if (((entity == NULL) && (type == NULL)) || (q == NULL))
-    {
-      snprintf(why, whyLen, "'if' - { \"entity\" or \"type\", \"q\" }, or a list of them");
+    if (condNode(allocP, cP, &ruleP->condV[ruleP->conds], 0, why, whyLen) == false)
       return false;
-    }
-    if (type == NULL)
-      type = idType(allocP, entity);
-    if (type == NULL)
-    {
-      snprintf(why, whyLen, "'if' names an entity whose id holds no type (urn:ngsi-ld:<type>:...) - give 'type' too");
-      return false;
-    }
-
-    CepCondition* condP = &ruleP->condV[ruleP->conds++];
-    condP->entity = (entity != NULL) ? corAllocStrdup(allocP, entity) : NULL;
-    condP->type   = corAllocStrdup(allocP, type);
-    condP->q      = corAllocStrdup(allocP, q);
+    ruleP->conds++;
   }
 
   return true;
