@@ -7,7 +7,7 @@
 // corCep - an NGSI-LD complex event processor (doc/design.md)
 //
 //   corCep --broker http://host:port [--port 7602] [--notify-url http://host:7602] [--tenant T]
-//          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval 10]
+//          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval 10] [--renew-interval 3600]
 //
 #include <stdarg.h>                              // va_list
 #include <stdio.h>                               // fprintf, vfprintf
@@ -58,6 +58,7 @@ static CorArg options[] =
   { "--token-command", "-tc", CorArgString, &tokenCmdArg, CorArgOpt, NULL,     NULL,  NULL,        "a command printing the bearer token - run again before it expires, and on a 401" },
   { "--broker-cert", "-bc", CorArgString, &brokerCertArg, CorArgOpt, NULL,     NULL,  NULL,        "the broker's own certificate (PEM): trusted as it is, instead of the CA store and the host name" },
   { "--stats-interval", "-si", CorArgInt, &statsInterval, CorArgOpt, _vp 10,  _vp 0, _vp 86400,   "seconds between two writes of a rule's statistics to its Rule entity (0: at once)" },
+  { "--renew-interval", "-ri", CorArgInt, &renewInterval, CorArgOpt, _vp 3600, _vp 0, _vp 43200, "seconds between two renewals of corCep's subscriptions - a broker that keeps a subscription's owner only for a while (coraine --auth oidc: 24 h) stops notifying once it runs out (0: never)" },
   CORARGS_END
 };
 

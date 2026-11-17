@@ -1,0 +1,107 @@
+#
+# FILE            cep_renew_subscriptions.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# --renew-interval: corCep's subscriptions renewed (a PATCH, with its token of now). A broker that keeps a
+# subscription's owner only for a while - coraine --auth oidc, --oidcOwnerMaxAge, 24 h on a hub - stops notifying
+# once it runs out, and says nothing: no failure, no log. A hub's rules went quiet that way, a day after corCep
+# started (2026-11-16).
+#
+# The test's auth broker keeps an owner 20 s (test/funcTests/broker.sh). Two corCeps side by side, each in a
+# tenant of its own: one renewing every 3 s, one never (--renew-interval 0). After 25 s a switch is pressed in
+# each: the renewing one's rule fires, the other's does not - the owner did run out.
+#
+--NAME--
+subscriptions renewed (--renew-interval): an owner the broker keeps only a while (24 h on a hub) stops no rule
+
+--TAGS--
+cep auth
+
+--INIT--
+cepTestInit
+H="$CEP_AUTH_DIR"
+P="${CEP_AUTH_PORT:-4063}"
+[ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$P/ngsi-ld/v1/types")" = 401 ] || \
+  echo "the test's broker (https, oidc) does not answer on $P - test/funcTests/broker.sh up starts it" >&2
+
+--RUN--
+H="$CEP_AUTH_DIR"
+P="${CEP_AUTH_PORT:-4063}"
+B="https://127.0.0.1:$P"
+T1="$(cepTenant)a"
+T2="$(cepTenant)b"
+hub() {  # hub <tenant> <method> <path> [payload]
+  local t; t=$(NOCOUNT=1 python3 -I "$H/token.py" "$H" 300)
+  curl -sk -o /dev/null -w "$2 $3: %{http_code}\n" -X "$2" -H "Authorization: Bearer $t" -H "NGSILD-Tenant: $1" \
+       ${4:+-H "Content-Type: application/json" -d "$4"} "$B/ngsi-ld/v1$3"
+}
+home() {  # home <tenant> - a switch, a light, the rule between them
+  hub "$1" POST /entities '{"id": "urn:ngsi-ld:WallSwitch:hall", "type": "WallSwitch", "press": {"type": "Property", "value": 0}}'
+  hub "$1" POST /entities '{"id": "urn:ngsi-ld:Light:hall", "type": "Light", "on": {"type": "Property", "value": false}}'
+  hub "$1" POST /entities '{"id": "urn:ngsi-ld:Rule:hall", "type": "Rule",
+    "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:hall", "attribute": "press"}},
+    "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:hall", "toggle": "on"}]}}'
+}
+cep() {  # cep <n> <tenant> <port> [options...] - a corCep against the test's broker, its log and pid by <n>
+  local n="$1" t="$2" p="$3"; shift 3
+  "$CEP_BIN" --broker "$B" --port "$p" --tenant "$t" --broker-cert "$H/cert.pem" \
+             --token-command "NOCOUNT=1 python3 -I $H/token.py $H 300" "$@" > "$CEP_TEST_DIR/cep$n.log" 2>&1 &
+  echo $! > "$CEP_TEST_DIR/cep$n.pid"
+  for ((i = 0; i < 100; i++)); do grep -q " subscriptions\?$" "$CEP_TEST_DIR/cep$n.log" && break; sleep 0.1; done
+  grep -o "[0-9]* rules\?, [0-9]* subscriptions\?$" "$CEP_TEST_DIR/cep$n.log"
+}
+
+echo "01. Two homes, each a switch, a light and a rule; a corCep each - one renewing every 3 s, one never"
+echo "===================================================================================================="
+home "$T1"
+home "$T2"
+cep 1 "$T1" "$CEP_PORT"             --renew-interval 3
+cep 2 "$T2" "$((CEP_PORT + 1))"     --renew-interval 0
+echo
+echo
+
+
+echo "02. 25 s - longer than the broker keeps an owner (20 s); each switch pressed"
+echo "============================================================================"
+sleep 25
+hub "$T1" PATCH /entities/urn:ngsi-ld:WallSwitch:hall/attrs '{"press": {"type": "Property", "value": 1}}'
+hub "$T2" PATCH /entities/urn:ngsi-ld:WallSwitch:hall/attrs '{"press": {"type": "Property", "value": 1}}'
+for ((i = 0; i < 50; i++)); do grep -q "fired" "$CEP_TEST_DIR/cep1.log" && break; sleep 0.1; done
+sleep 2                                          # the other: given the same time, and more
+echo "renewing: $(grep -c "fired" "$CEP_TEST_DIR/cep1.log") fired"
+echo "never:    $(grep -c "fired" "$CEP_TEST_DIR/cep2.log") fired"
+echo "renewals refused: $(grep -c "renewing subscription" "$CEP_TEST_DIR/cep1.log")"
+echo
+echo
+
+
+--TEARDOWN--
+for n in 1 2; do
+  [ -f "$CEP_TEST_DIR/cep$n.pid" ] && kill "$(cat "$CEP_TEST_DIR/cep$n.pid")" 2> /dev/null
+done
+true
+
+--EXPECT--
+01. Two homes, each a switch, a light and a rule; a corCep each - one renewing every 3 s, one never
+====================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+1 rule, 1 subscription
+1 rule, 1 subscription
+
+
+02. 25 s - longer than the broker keeps an owner (20 s); each switch pressed
+============================================================================
+PATCH /entities/urn:ngsi-ld:WallSwitch:hall/attrs: 204
+PATCH /entities/urn:ngsi-ld:WallSwitch:hall/attrs: 204
+renewing: 1 fired
+never:    0 fired
+renewals refused: 0
+
+

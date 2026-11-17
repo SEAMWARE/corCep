@@ -11,6 +11,9 @@
 // Each rule's statistics - fired (a count), firedAt, lastError - are written to its Rule entity, at most once
 // every statsInterval seconds (--stats-interval): on a tick of the engine's loop, once a second.
 //
+// Every renewInterval seconds (--renew-interval) the subscriptions are renewed - a broker that keeps a
+// subscription's owner only for a while (coraine --auth oidc: 24 h) stops notifying, silently, once it runs out.
+//
 #include <pthread.h>                             // pthread_mutex_t, pthread_cond_t
 #include <stdio.h>                               // snprintf
 #include <stdlib.h>                              // malloc, free, atoi
@@ -49,6 +52,7 @@ static Item*            queueTail  = NULL;
 static CepRules*        rules      = NULL;       // the generation running
 
 int statsInterval = 10;                          // --stats-interval
+int renewInterval = 3600;                        // --renew-interval
 
 
 
@@ -962,12 +966,25 @@ void engineRun(void)
 
   rulesReload();
 
+  long long renewedAt = nowMs();
+
   while (true)
   {
     //
     // The deadlines passed (absences, superseded fires waiting) fire; the wait: till the next one, a second at most
     //
     long long now  = nowMs();
+
+    //
+    // The subscriptions renewed - a broker that keeps their owner only for a while would stop notifying
+    //
+    if ((renewInterval > 0) && (now - renewedAt >= (long long) renewInterval * 1000))
+    {
+      renewedAt = now;
+      if (subsRenew() == true)
+        rulesReload();
+    }
+
     long long next = patternsTimers(rules, now, fireCb, &alloc);
     long long step = steppersRun(&alloc, nowMs());
 
