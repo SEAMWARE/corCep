@@ -184,6 +184,7 @@ typedef struct CepRule
   int             steps;
   long long       withinMs;                      // Seq, All, Repeat
   long long       forMs;                         // Absent, Window
+  int             afterEv;                       // Absent: the event that starts the deadline (an index into eventV), the absent one clears it; -1: none - each absent event moves it on
   CepWindowAgg    aggregate;                     // Window
   double          boundV[4];                     // Window: by CepBound
   unsigned        bounds;                        // Window: the bounds given, a bit each (1 << CepBound)

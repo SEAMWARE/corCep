@@ -438,6 +438,8 @@ static bool windowParse(CorNode* patternP, CepRule* ruleP, char* why, int whyLen
 //   { "all":    [ <names> ], "within": <duration> }         each of them, in any order, all within
 //   { "repeat": <name>, "min": <n>, "within": <duration> }  n times within
 //   { "absent": <name>, "for": <duration> }                 none for that long
+//   { "absent": <name>, "for": <duration>, "after": <name> }  none for that long after the 'after' event - it
+//                                                            starts the deadline, <name> clears it
 //   { "window": <name>, "for": <duration>, "<aggregate>": { "<bound>": <number>, ... } }
 //                                                           an aggregate of the last 'for' of values: avg, min, max,
 //                                                           sum or count - one; bounds gt, ge, lt, le - all must hold
@@ -535,17 +537,38 @@ static bool patternParse(CorAlloc* allocP, CorNode* patternP, CepRule* ruleP, Ce
   CorNode* forP    = corTreeLookup(patternP, "for");
   CorNode* minP    = corTreeLookup(patternP, "min");
 
+  if ((corTreeLookup(patternP, "after") != NULL) && (strcmp(kind, "absent") != 0))
+  {
+    snprintf(why, whyLen, "'after' - with 'absent' only");
+    return false;
+  }
+
   if (strcmp(kind, "any") == 0)
     ruleP->kind = CepPatternAny;
   else if (strcmp(kind, "window") == 0)
     return windowParse(patternP, ruleP, why, whyLen);
   else if (strcmp(kind, "absent") == 0)
   {
-    ruleP->kind = CepPatternAbsent;
+    CorNode* afterP = corTreeLookup(patternP, "after");
+
+    ruleP->kind    = CepPatternAbsent;
+    ruleP->afterEv = -1;
     if ((forP == NULL) || (forP->type != CorString) || (durationParse(forP->value.s, &ruleP->forMs) == false))
     {
       snprintf(why, whyLen, "'absent' needs 'for' - an ISO 8601 duration (\"PT10M\")");
       return false;
+    }
+    if (afterP != NULL)
+    {
+      if ((afterP->type != CorString) || (strcmp(afterP->value.s, kindP->value.s) == 0))
+      {
+        snprintf(why, whyLen, "'absent': 'after' - the name of another event, the one that starts the deadline");
+        return false;
+      }
+
+      ruleP->afterEv = eventUse(ruleP, declV, decls, afterP->value.s, why, whyLen);
+      if (ruleP->afterEv < 0)
+        return false;
     }
   }
   else
