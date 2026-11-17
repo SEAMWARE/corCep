@@ -68,9 +68,10 @@ ngsild() {
 # The log (stderr) goes to $CEP_TEST_DIR/corCep.log - a test waits on it with cepAwaitLog, and it is kept for
 # reading when a test fails.
 #
+# CEP_BROKER_URL: another broker URL for corCep (a test's proxy - ftFlakyBroker.py); default the test broker
 cepStart() {
   rm -f "$CEP_TEST_DIR/corCep.log"               # not the last corCep's: its "rules" line is not this one's
-  "$CEP_BIN" --broker "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" \
+  "$CEP_BIN" --broker "${CEP_BROKER_URL:-http://$CEP_BROKER_HOST:$CEP_BROKER_PORT}" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" \
              > "$CEP_TEST_DIR/corCep.log" 2>&1 &
   echo $! > "$CEP_TEST_DIR/corCep.pid"
 
@@ -297,4 +298,23 @@ dryRunPost() {
              -H 'Content-Type: application/json' --data-binary "$body")
   echo "POST /dry-run: ${out##*$'\n'}"
   printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, sys; print(json.dumps(json.load(sys.stdin), indent=2, sort_keys=True))'
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# flakyBrokerStart <port> <fail file> <log file> - ftFlakyBroker.py in front of the test broker (pid in
+# $CEP_TEST_DIR/proxy.pid - cepPidStop it); waits till it answers
+#
+flakyBrokerStart() {
+  python3 -I "$(dirname "${BASH_SOURCE[0]}")/tools/ftFlakyBroker.py" "$1" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT" "$2" "$3" &
+  echo $! > "$CEP_TEST_DIR/proxy.pid"
+
+  local i
+  for ((i = 0; i < 50; i++)); do
+    curl -s -o /dev/null "http://127.0.0.1:$1/" && return 0
+    sleep 0.1
+  done
+  echo "flakyBrokerStart: no answer on port $1" >&2
+  return 1
 }

@@ -59,14 +59,29 @@ char* urlEncode(CorAlloc* allocP, const char* s)
 
 // -----------------------------------------------------------------------------
 //
+// jsonText - a tree as JSON text, in allocP
+//
+char* jsonText(CorAlloc* allocP, CorNode* nodeP)
+{
+  CorJson json;
+  corJsonCreate(&json, allocP);
+
+  char* text = corAlloc(allocP, corJsonRenderSize(&json, nodeP) + 1);
+  corJsonRender(&json, nodeP, text);
+  return text;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // requestOnce - <broker>/ngsi-ld/v1<path>[?query], bodyP rendered as JSON; the answer parsed
 //
-static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP)
+static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, const char* body, CepResponse* respP)
 {
   CorRestKeyValue  headers[5];
   int              headerCount = 0;
-  char*            body        = NULL;
-  int              bodyLen     = 0;
+  int              bodyLen     = (body != NULL) ? strlen(body) : 0;
   char*            auth        = NULL;
 
   respP->status   = 0;
@@ -82,14 +97,8 @@ static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, co
   headers[headerCount].value = (char*) "application/json";
   ++headerCount;
 
-  if (bodyP != NULL)
+  if (body != NULL)
   {
-    CorJson json;
-    corJsonCreate(&json, allocP);
-    body = corAlloc(allocP, corJsonRenderSize(&json, bodyP) + 1);
-    corJsonRender(&json, bodyP, body);
-    bodyLen = strlen(body);
-
     headers[headerCount].key   = (char*) "Content-Type";
     headers[headerCount].value = (char*) "application/json";
     ++headerCount;
@@ -123,7 +132,7 @@ static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, co
 
   corRestClientMultiMaxResponse(multiP, BROKER_ANSWER_MAX);
 
-  if (corRestClientMultiAdd(multiP, verb, url, headers, headerCount, body, bodyLen, NULL, NULL) < 0)
+  if (corRestClientMultiAdd(multiP, verb, url, headers, headerCount, (char*) body, bodyLen, NULL, NULL) < 0)
   {
     snprintf(respP->error, sizeof(respP->error), "the URL %s could not be used", url);
     corRestClientMultiDestroy(multiP);
@@ -165,20 +174,32 @@ static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, co
 
 // -----------------------------------------------------------------------------
 //
-// brokerRequest - <broker>/ngsi-ld/v1<path>[?query], bodyP rendered as JSON; the answer parsed. A 401 with a token
-// that can be renewed (--token-command): renewed, the request once more
+// brokerRequestText - <broker>/ngsi-ld/v1<path>[?query] with a body already JSON text (NULL: none); the answer
+// parsed. A 401 with a token that can be renewed (--token-command): renewed, the request once more. Thread-safe:
+// the engine and the action sender (sender.c) both call it
 //
-bool brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP)
+bool brokerRequestText(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, const char* body, CepResponse* respP)
 {
-  bool ok = requestOnce(allocP, verb, path, query, bodyP, respP);
+  bool ok = requestOnce(allocP, verb, path, query, body, respP);
 
   if ((ok == true) && (respP->status == 401) && (tokenRefused() == true))
   {
     logLine("the broker refused the token (401) - a new one, the request again");
-    return requestOnce(allocP, verb, path, query, bodyP, respP);
+    return requestOnce(allocP, verb, path, query, body, respP);
   }
 
   return ok;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// brokerRequest - as brokerRequestText, bodyP rendered as JSON
+//
+bool brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP)
+{
+  return brokerRequestText(allocP, verb, path, query, (bodyP != NULL) ? jsonText(allocP, bodyP) : NULL, respP);
 }
 
 

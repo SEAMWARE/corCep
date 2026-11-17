@@ -52,6 +52,16 @@ typedef struct CepResponse
 } CepResponse;
 
 extern bool  brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP);
+extern bool  brokerRequestText(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, const char* body, CepResponse* respP);
+extern char* jsonText(CorAlloc* allocP, CorNode* nodeP);                                    // a tree as JSON text
+extern void  brokerFailed(char* why, int whyLen, const char* what, CepResponse* respP);    // engine.c - why a request failed
+
+//
+// The actions' PATCHes (sender.c) - a queue per target, a thread, retried for --retry-for
+//
+extern bool  senderStart(int retryForS);
+extern void  senderPatch(const char* ruleId, int action, const char* entity, const char* body);   // action 0: a step
+extern int   senderDrain(long long ms);                                                          // at a stop; still waiting
 extern char* urlEncode(CorAlloc* allocP, const char* s);
 extern bool  nonexistentTenant(CepResponse* respP);
 
