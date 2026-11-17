@@ -82,8 +82,10 @@ cepStart() {
 #
 # cepStop - stop the corCep cepStart started (by its pid, never by name)
 #
-cepStop() {
-  local pidFile="$CEP_TEST_DIR/corCep.pid"
+# cepPidStop <pidFile> - a SIGTERM, then waits for the exit (corCep writes its state and statistics first - a second
+# at most), kill -9 after 5 s; the pid file removed. Its port is free when this returns.
+cepPidStop() {
+  local pidFile="$1"
   [ -f "$pidFile" ] || return 0
 
   local pid i
@@ -95,6 +97,9 @@ cepStop() {
   done
   kill -9 "$pid" 2>/dev/null
   rm -f "$pidFile"
+}
+cepStop() {
+  cepPidStop "$CEP_TEST_DIR/corCep.pid"
 }
 
 

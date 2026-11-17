@@ -31,7 +31,7 @@ make install          # /usr/local/bin/corCep (PREFIX=..., DESTDIR=...)
 ```
 corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant T]
        [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S]
-       [--renew-interval PT1H]
+       [--renew-interval PT1H] [--state FILE]
        [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
 ```
 
@@ -46,6 +46,7 @@ corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant
 | `--broker-cert`, `-bc` | the broker's own certificate (PEM), trusted as it is - for a broker whose certificate no CA signed and whose name is not the one in `--broker`. See [A broker with a certificate of its own](#a-broker-with-a-certificate-of-its-own) |
 | `--stats-interval`, `-si` | how often at most a rule's statistics are written to its Rule entity - seconds or ISO 8601 (default `PT10S`; 0: at once) - see [Statistics](#statistics) |
 | `--renew-interval`, `-ri` | how often corCep's subscriptions are renewed - seconds or ISO 8601 (default `PT1H`, up to `P365D`; 0: never) - a broker that keeps a subscription's owner only for a while (coraine `--auth oidc`: `--oidcOwnerMaxAge`, 24 h) stops notifying once it runs out, without a word |
+| `--state`, `-st` | a file the patterns' state is kept in over a restart - matches half done, deadlines, window values, steps running (default: not kept). See [State over a restart](#state-over-a-restart) |
 | `--jwks`, `-jw` | the JWK Set - a URL (`http://`, `https://`) or a file - that the rule editors' tokens are checked against. Turns `POST /dry-run` on; keys that cannot be read: corCep does not start. See [Dry run](#dry-run) |
 | `--issuer`, `-is` | with `--jwks`: the `iss` a token must have (default: not checked) |
 | `--audience`, `-au` | with `--jwks`: an `aud` a token must have (default: not checked) |
@@ -354,6 +355,43 @@ Without `--broker-cert`, an `https://` broker's certificate is checked against t
 
 The test `cep_broker_auth` runs both against a broker of its own (HTTPS, OIDC with a JWK Set file - `broker.sh up` starts it).
 
+## State over a restart
+
+```
+corCep --broker http://localhost:1026 --state /var/lib/corcep/state.cor
+```
+
+Without `--state`, a restart forgets what the patterns were in the middle of: the first press of a double press,
+the time an absence started, a window's values, a dimmer's step. With it, corCep writes them to the file and reads
+them back at start.
+
+| | |
+|---|---|
+| written | at most once a second, when something changed; and at a stop (SIGTERM, SIGINT - corCep writes it and the statistics, then exits, within a second) |
+| how | whole, to `<file>.tmp`, flushed to the disk, renamed over the file: a crash while writing leaves the last state written, never half of one. A crash loses the last second at most |
+| format | corTree's binary format (cor), behind the 8 bytes `corCepS` + NUL |
+| read | at start, before the rules: each rule's state found again by the rule's id |
+| none yet, or not a state | corCep starts empty, and the log says so |
+
+What comes back, and what does not:
+
+| | after the restart |
+|---|---|
+| a match half done (`seq`, `all`, `repeat`) | goes on; its `within` counts from the first event, the time corCep was down included - a restart later than `within` drops it |
+| a window's values | kept, each with its time; those older than `for` leave as they would have |
+| an `absent` deadline still ahead | fires when it would have |
+| an `absent` deadline that passed while corCep was down | not fired late: it starts again from the start |
+| a superseded fire waiting (`supersedes`) whose time passed | dropped - fired late it would be worse than not fired |
+| a step running (`step`) | goes on from the values it had reached, to its bound or its `for`; what it does (`by`, bounds, `every`, `until`) is read again from its rule. A rule, or a step of that attribute in it, gone meanwhile: it stops |
+| a rule whose `when` changed meanwhile | starts afresh |
+| `cron` / `at` | from the rule, as at any start |
+
+The times are the wall clock's: the file is good after a reboot. Fire counts are not in it - they are on the Rule
+entity ([Statistics](#statistics)).
+
+The test `cep_state` runs it: a double press split by a stop, and by a `kill -9`; an absence's deadline over a stop,
+and passed while down; a window; a step; a file that is not a state.
+
 ## Dry run
 
 `POST /dry-run` replays rules against events made up for the purpose - what would fire, when, on which entities,
@@ -471,6 +509,7 @@ too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JW
 | `cep_event_any` | `events` + `pattern`: `any` of two events fires the rule; a pattern naming one event uses that one |
 | `cep_when_left_out` | a `when` that is not right is left out, with the reason |
 | `cep_event_where` | `where` is the subscription's q: only matching updates fire |
+| `cep_state` | `--state`: a match half done, a window, an absence's deadline and a step over a stop and a crash; a deadline passed while down starts again; a file that is not a state |
 | `cep_rule_stats` | `fired`, `firedAt`, `lastError` on the Rule entity; no reload from them; the count survives a restart |
 | `cep_pattern_seq` | a double press within 1 s fires; 1.6 s apart does not, and the second press starts a new match |
 | `cep_pattern_supersedes` | a double press fires only the double-press rule; a single press fires the other 1 s late |

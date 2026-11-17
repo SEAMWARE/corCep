@@ -8,7 +8,7 @@
 //
 //   corCep --broker http://host:port [--port 7602] [--notify-url http://host:7602] [--tenant T]
 //          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S] [--renew-interval PT1H]
-//          [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
+//          [--state FILE] [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
 //
 #include <stdarg.h>                              // va_list
 #include <stdio.h>                               // fprintf, vfprintf
@@ -48,6 +48,9 @@ static char* audienceArg  = NULL;
 static char* rolesClaimArg = NULL;
 static char* editorRoleArg = NULL;
 static int   jwksRefreshArg = 300;
+static char* stateArg     = NULL;
+
+volatile sig_atomic_t cepStopping = 0;
 
 
 
@@ -66,6 +69,7 @@ static CorArg options[] =
   { "--broker-cert", "-bc", CorArgString, &brokerCertArg, CorArgOpt, NULL,     NULL,  NULL,        "the broker's own certificate (PEM): trusted as it is, instead of the CA store and the host name" },
   { "--stats-interval", "-si", CorArgDuration, &statsInterval, CorArgOpt, _vp 10,  _vp 0, _vp 86400,   "how often at most a rule's statistics are written to its Rule entity - seconds or ISO 8601 (PT10S, PT1M; 0: at once)" },
   { "--renew-interval", "-ri", CorArgDuration, &renewInterval, CorArgOpt, _vp 3600, _vp 0, _vp 31536000, "how often corCep's subscriptions are renewed - seconds or ISO 8601 (PT1H, P1D; up to P365D; 0: never). A broker that keeps a subscription's owner only for a while (coraine --auth oidc: 24 h) stops notifying once it runs out" },
+  { "--state",      "-st", CorArgString, &stateArg,     CorArgOpt, NULL,      NULL,  NULL,        "a file the patterns' state is kept in over a restart - open matches, deadlines, window values (default: not kept)" },
   { "--jwks",       "-jw", CorArgString, &jwksArg,      CorArgOpt, NULL,      NULL,  NULL,        "the JWK Set (a URL or a file) the rule editors' tokens are checked against - turns POST /dry-run on" },
   { "--issuer",     "-is", CorArgString, &issuerArg,    CorArgOpt, NULL,      NULL,  NULL,        "with --jwks: the iss a token must have (default: not checked)" },
   { "--audience",   "-au", CorArgString, &audienceArg,  CorArgOpt, NULL,      NULL,  NULL,        "with --jwks: an aud a token must have (default: not checked)" },
@@ -162,6 +166,17 @@ static bool brokerCertPin(const char* path, char* why, int whyLen)
 
 // -----------------------------------------------------------------------------
 //
+// stopSignal - SIGTERM, SIGINT: noted; the engine stops at its next turn (a second at most)
+//
+static void stopSignal(int sig)
+{
+  cepStopping = sig;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // main -
 //
 int main(int argC, char* argV[])
@@ -221,6 +236,18 @@ int main(int argC, char* argV[])
     return 1;
 #endif
   }
+
+  if ((stateArg != NULL) && (stateArg[0] != 0))
+    stateFile = stateArg;
+
+  //
+  // SIGTERM, SIGINT: the engine writes the state and the statistics, then stops
+  //
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = stopSignal;
+  sigaction(SIGTERM, &sa, NULL);
+  sigaction(SIGINT,  &sa, NULL);
 
   //
   // The secret in every notification path - made here, never written anywhere
