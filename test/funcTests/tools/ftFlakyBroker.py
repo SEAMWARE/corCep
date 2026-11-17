@@ -10,7 +10,8 @@
 #   ftFlakyBroker.py <port> <broker base URL> <fail file> <log file>
 #
 # Every request is passed on to the broker, except a PATCH /ngsi-ld/v1/entities/<id>/attrs whose <id> is a line of
-# <fail file> - "<id> <status>": answered <status> itself (0: the connection closed, no answer at all). Read at each
+# <fail file> - "<id> <status>": answered <status> itself (0: the connection closed, no answer at all). A line
+# "GET <ms>": every GET is passed on <ms> late - a slow broker. The file is read at each
 # request: a test fails and heals the broker by writing the file. Each PATCH of attributes is logged, one line:
 # "<id> <body, compact> <status>".
 #
@@ -18,6 +19,7 @@ import http.server
 import json
 import socketserver
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -62,6 +64,11 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
+
+        if self.command == "GET":
+            delay = failing("GET")
+            if delay:
+                time.sleep(delay / 1000)
 
         headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length", "connection")}
         req = urllib.request.Request(broker + self.path, data=body, method=self.command, headers=headers)

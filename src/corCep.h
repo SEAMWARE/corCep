@@ -244,7 +244,8 @@ extern bool subsApply(CepRules* rulesP);                      // one per watch, 
 extern bool subsRenew(void);                                  // all renewed (their owner); true: one was gone - read the rules again
 extern bool listenerStart(void);                              // the notification server, its own thread
 extern void engineRun(void);                                  // the events, one at a time - never returns
-extern void engineQueue(const char* which, const char* body, int bodyLen);   // from the listener thread
+extern void engineQueue(const char* which, const char* body, int bodyLen);   // from the listener / sender threads; full: the oldest events dropped
+extern int  queueMax;                                                       // --queue-max
 
 //
 // The patterns' state (pattern.c) - the engine's thread only
