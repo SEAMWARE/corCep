@@ -1,0 +1,175 @@
+#
+# FILE            cep_rule_else.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# 'else' - the actions when the rule's 'if' does not hold. The 'if' is asked once per match, then exactly one
+# branch runs: one rule instead of two with opposite ifs, which race (the first one's PATCH can reach the broker
+# before the second one's 'if' is asked: both run). firedElse counts the else ones; 'else' without 'if' is refused.
+#
+--NAME--
+'else': one 'if' asked, then exactly one branch - then or else; firedElse; else without if left out; /dry-run
+
+--TAGS--
+cep rule else
+
+--INIT--
+cepTestInit
+dryRunKeys > /dev/null
+
+--RUN--
+S=urn:ngsi-ld:WallSwitch:meeting
+on() { for l in "$@"; do echo "$l: $(entityKv urn:ngsi-ld:Light:$l | python3 -I -c 'import json, sys; print(json.load(sys.stdin).get("on"))')"; done; }
+ruleKv() { curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/urn:ngsi-ld:Rule:$1?options=keyValues&pick=fired,firedElse" |
+           python3 -I -c 'import json, sys; d = json.load(sys.stdin); print("fired %s, firedElse %s" % (d.get("fired"), d.get("firedElse")))'; }
+lightsOff() { for l in a b; do curl -s -o /dev/null -X PATCH -H "NGSILD-Tenant: $(cepTenant)" -H "Content-Type: application/json" \
+              -d '{"on": {"type": "Property", "value": false}}' "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/urn:ngsi-ld:Light:$l/attrs"; done; }
+WHEN="{\"entity\": \"$S\", \"attribute\": \"press\", \"if\": {\"entity\": \"urn:ngsi-ld:Light:a\", \"q\": \"on==false\"}}"
+THEN='[{"entity": "urn:ngsi-ld:Light:a", "set": {"on": true}}]'
+ELSE='[{"entity": "urn:ngsi-ld:Light:b", "set": {"on": true}}]'
+
+
+echo "01. A meeting room: one switch, two lights; 'more light' - a on if off, else b on; two rules not right"
+echo "======================================================================================================"
+for l in a b; do ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Light:$l\", \"type\": \"Light\", \"on\": {\"type\": \"Property\", \"value\": false}}"; done
+ngsildStatus POST /entities "{\"id\": \"$S\", \"type\": \"WallSwitch\", \"press\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:more\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": $WHEN},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": $THEN}, \"else\": {\"type\": \"JsonProperty\", \"json\": $ELSE}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:noif\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$S\", \"attribute\": \"press\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": $THEN}, \"else\": {\"type\": \"JsonProperty\", \"json\": $ELSE}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:empty\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": $WHEN},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": $THEN}, \"else\": {\"type\": \"JsonProperty\", \"json\": []}}"
+cepStart --stats-interval 0 --jwks "$CEP_TEST_DIR/jwks.json" --issuer http://editor.test
+grep -o "rule urn:ngsi-ld:Rule:.* left out: .*" "$CEP_TEST_DIR/corCep.log" | sort
+echo
+echo
+
+
+echo "02. A press: a was off - a on (then); another: a is on - b on (else)"
+echo "===================================================================="
+attrSet $S press 1
+firedAwait more 1
+sleep 0.3
+on a b
+attrSet $S press 2
+firedAwait more 2
+sleep 0.3
+on a b
+grep -o "rule urn:ngsi-ld:Rule:more.*" "$CEP_TEST_DIR/corCep.log" | sed 's/ (.*)$//'
+sleep 0.5
+ruleKv more
+echo
+echo
+
+
+echo "03. Both off again, a press - a on, b not: one 'if', one branch (two rules with opposite ifs can race to both)"
+echo "==============================================================================================================="
+lightsOff
+attrSet $S press 3
+firedAwait more 3
+sleep 0.3
+on a b
+echo
+echo
+
+
+echo "04. /dry-run: a off - then; a on - else, with why"
+echo "================================================="
+TOKEN=$(dryRunToken --claims '{"realm_access": {"roles": ["ngsild-write"]}}')
+MORE="{\"id\": \"urn:ngsi-ld:Rule:more\", \"type\": \"Rule\", \"when\": {\"json\": $WHEN}, \"then\": {\"json\": $THEN}, \"else\": {\"json\": $ELSE}}"
+dryRunPost "$TOKEN" "{\"start\": \"2026-11-17T18:00:00Z\", \"for\": \"PT1S\", \"rules\": [$MORE],
+  \"entities\": [{\"id\": \"urn:ngsi-ld:Light:a\", \"type\": \"Light\", \"on\": false}],
+  \"events\": [{\"at\": 0, \"entity\": \"$S\", \"type\": \"WallSwitch\", \"attribute\": \"press\", \"value\": 1},
+              {\"at\": 100, \"entity\": \"urn:ngsi-ld:Light:a\", \"type\": \"Light\", \"attribute\": \"on\", \"value\": true},
+              {\"at\": 200, \"entity\": \"$S\", \"type\": \"WallSwitch\", \"attribute\": \"press\", \"value\": 2}]}"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A meeting room: one switch, two lights; 'more light' - a on if off, else b on; two rules not right
+======================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+rule urn:ngsi-ld:Rule:empty left out: 'else' - a list of actions
+rule urn:ngsi-ld:Rule:noif left out: 'else' without an 'if' - the rule's 'when' has no 'if' that could fail
+
+
+02. A press: a was off - a on (then); another: a is on - b on (else)
+====================================================================
+more: 1
+a: True
+b: False
+more: 2
+a: True
+b: True
+rule urn:ngsi-ld:Rule:more fired
+rule urn:ngsi-ld:Rule:more: 'if' on==false does not hold - else
+rule urn:ngsi-ld:Rule:more fired - else
+fired 2, firedElse 1
+
+
+03. Both off again, a press - a on, b not: one 'if', one branch (two rules with opposite ifs can race to both)
+===============================================================================================================
+more: 3
+a: True
+b: False
+
+
+04. /dry-run: a off - then; a on - else, with why
+=================================================
+POST /dry-run: 200
+{
+  "end": 1000,
+  "fires": [
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:a"
+          ],
+          "set": {
+            "on": true
+          }
+        }
+      ],
+      "at": 0,
+      "entity": "urn:ngsi-ld:WallSwitch:meeting",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:more",
+      "time": "2026-11-17T18:00:00.000Z"
+    },
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:b"
+          ],
+          "set": {
+            "on": true
+          }
+        }
+      ],
+      "at": 200,
+      "else": true,
+      "entity": "urn:ngsi-ld:WallSwitch:meeting",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:more",
+      "time": "2026-11-17T18:00:00.200Z",
+      "why": "'if' on==false does not hold"
+    }
+  ],
+  "leftOut": [],
+  "start": "2026-11-17T18:00:00.000Z",
+  "truncated": false
+}
+
+

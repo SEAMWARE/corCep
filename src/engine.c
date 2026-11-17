@@ -85,6 +85,7 @@ typedef struct Stats
   bool           dirty;                          // changed since written
   long long      droppedWritten;                 // droppedMatches as last written
   long long      droppedValuesWritten;           // droppedValues as last written
+  long long      firedElse;                      // of fired: the times the 'if' did not hold and 'else' ran
   long long      droppedActions;                 // PATCHes dropped (sender.c: not sent within --retry-for, or a full queue), since start
   bool           seen;                           // in the generation running
   time_t         writtenAt;
@@ -832,7 +833,8 @@ static Stats* statsOf(CepRule* ruleP)
     return NULL;
 
   sP->id    = strdup(ruleP->id);
-  sP->fired = ruleP->firedBase;
+  sP->fired     = ruleP->firedBase;
+  sP->firedElse = ruleP->firedElseBase;
   sP->next  = statsList;
   statsList = sP;
 
@@ -888,6 +890,15 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
     corTreeChildAdd(bodyP, dP);
   }
   sP->droppedValuesWritten = droppedValues;
+
+  if (sP->firedElse > 0)
+  {
+    CorNode* fP = corTreeObject(allocP, "firedElse");
+
+    corTreeChildAdd(fP, corTreeString(allocP, "type", "Property"));
+    corTreeChildAdd(fP, corTreeInteger(allocP, "value", sP->firedElse));
+    corTreeChildAdd(bodyP, fP);
+  }
 
   if (sP->droppedActions > 0)
   {
@@ -989,12 +1000,15 @@ static void actionReport(char* text)
 
 // -----------------------------------------------------------------------------
 //
-// ruleFire - its actions, in order; one failing does not stop the others
+// ruleFire - its actions, in order; one failing does not stop the others. The 'if' asked once: holds - then's
+// actions; does not - else's, or (no else) not fired
 //
 static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
 {
   int    nFailed = 0;
   Stats* sP      = statsOf(ruleP);
+  int    first   = 0;
+  int    end     = ruleP->thens;
 
   for (int ix = 0; ix < ruleP->conds; ix++)
   {
@@ -1004,12 +1018,21 @@ static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
     {
       char text[512];
       condText(failP, text, sizeof(text));
-      logLine("rule %s: 'if' %s does not hold - not fired (%s)", ruleP->id, text, entity);
-      return;
+
+      if (ruleP->thens == ruleP->actions)
+      {
+        logLine("rule %s: 'if' %s does not hold - not fired (%s)", ruleP->id, text, entity);
+        return;
+      }
+
+      logLine("rule %s: 'if' %s does not hold - else (%s)", ruleP->id, text, entity);
+      first = ruleP->thens;
+      end   = ruleP->actions;
+      break;
     }
   }
 
-  for (int ix = 0; ix < ruleP->actions; ix++)
+  for (int ix = first; ix < end; ix++)
   {
     CepAction* aP       = &ruleP->actionV[ix];
     char       why[512] = { 0 };
@@ -1031,11 +1054,13 @@ static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
   if (sP != NULL)
   {
     ++sP->fired;
+    if (first > 0)
+      ++sP->firedElse;
     nowIso(sP->firedAt, sizeof(sP->firedAt));
     sP->dirty = true;
   }
 
-  logLine("rule %s fired (%s)%s", ruleP->id, entity, (nFailed > 0) ? " - an action failed" : "");
+  logLine("rule %s fired%s (%s)%s", ruleP->id, (first > 0) ? " - else" : "", entity, (nFailed > 0) ? " - an action failed" : "");
 }
 
 

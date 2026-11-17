@@ -1245,7 +1245,7 @@ static CepRules* rulesParseX(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, 
     //
     // --pdp: the author's signature first (author.c) - a rule changed without its editor does not run
     //
-    if (signedOnly && (authorVerify(&rP->alloc, str(eP, "author"), json(eP, "when"), json(eP, "then"), &ruleP->author, why, sizeof(why)) == false))
+    if (signedOnly && (authorVerify(&rP->alloc, str(eP, "author"), json(eP, "when"), json(eP, "then"), json(eP, "else"), &ruleP->author, why, sizeof(why)) == false))
       goto bad;
 
     if (whenParse(&rP->alloc, json(eP, "when"), ruleP, why, sizeof(why)) == false)
@@ -1269,6 +1269,9 @@ static CepRules* rulesParseX(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, 
     CorNode* firedP = corTreeLookup(eP, "fired");
     if ((firedP != NULL) && (firedP->type == CorInt))
       ruleP->firedBase = firedP->value.i;
+    CorNode* firedElseP = corTreeLookup(eP, "firedElse");
+    if ((firedElseP != NULL) && (firedElseP->type == CorInt))
+      ruleP->firedElseBase = firedElseP->value.i;
 
     if ((thenP == NULL) || (thenP->type != CorArray) || (thenP->value.head == NULL))
     {
@@ -1276,30 +1279,57 @@ static CepRules* rulesParseX(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, 
       goto bad;
     }
 
-    ruleP->actionV = (CepAction*) corAlloc(&rP->alloc, count(thenP) * sizeof(CepAction));
-    for (CorNode* aP = thenP->value.head; aP != NULL; aP = aP->next)
+    //
+    // 'else' - the actions when the 'if' does not hold: only with an 'if'
+    //
+    CorNode* elseP = json(eP, "else");
+    if (corTreeLookup(eP, "else") != NULL)
     {
-      memset(&ruleP->actionV[ruleP->actions], 0, sizeof(CepAction));
-      CepAction* actP = &ruleP->actionV[ruleP->actions];
-
-      if (actionParse(&rP->alloc, ruleP, aP, actP, why, sizeof(why)) == false)
-        goto bad;
-
-      //
-      // ${...}: each one a value the rule can give - the target, the q, the values
-      //
-      if (((actP->entity != NULL) && (varsCheck(ruleP, actP->entity, &actP->vars, why, sizeof(why)) == false)) ||
-          ((actP->q      != NULL) && (varsCheck(ruleP, actP->q,      &actP->vars, why, sizeof(why)) == false)) ||
-          ((actP->set    != NULL) && (varsCheckTree(ruleP, actP->set, &actP->vars, why, sizeof(why)) == false)))
-        goto bad;
-      if (actP->vars && (actP->kind == CepActionStep))
+      if ((elseP == NULL) || (elseP->type != CorArray) || (elseP->value.head == NULL))
       {
-        snprintf(why, sizeof(why), "a 'step' with ${...} in its target - not yet");
+        snprintf(why, sizeof(why), "'else' - a list of actions");
         goto bad;
       }
-      if (actP->vars)
-        ruleP->vars = true;
-      ++ruleP->actions;
+      if (ruleP->conds == 0)
+      {
+        snprintf(why, sizeof(why), "'else' without an 'if' - the rule's 'when' has no 'if' that could fail");
+        goto bad;
+      }
+    }
+
+    //
+    // The actions: then's, then else's (numbered on: action 1..thens, thens+1..)
+    //
+    ruleP->actionV = (CepAction*) corAlloc(&rP->alloc, (count(thenP) + ((elseP != NULL) ? count(elseP) : 0)) * sizeof(CepAction));
+    CorNode* listV[2] = { thenP, elseP };
+    for (int lx = 0; lx < 2; lx++)
+    {
+      if (lx == 1)
+        ruleP->thens = ruleP->actions;
+      for (CorNode* aP = (listV[lx] != NULL) ? listV[lx]->value.head : NULL; aP != NULL; aP = aP->next)
+      {
+        memset(&ruleP->actionV[ruleP->actions], 0, sizeof(CepAction));
+        CepAction* actP = &ruleP->actionV[ruleP->actions];
+
+        if (actionParse(&rP->alloc, ruleP, aP, actP, why, sizeof(why)) == false)
+          goto bad;
+
+        //
+        // ${...}: each one a value the rule can give - the target, the q, the values
+        //
+        if (((actP->entity != NULL) && (varsCheck(ruleP, actP->entity, &actP->vars, why, sizeof(why)) == false)) ||
+            ((actP->q      != NULL) && (varsCheck(ruleP, actP->q,      &actP->vars, why, sizeof(why)) == false)) ||
+            ((actP->set    != NULL) && (varsCheckTree(ruleP, actP->set, &actP->vars, why, sizeof(why)) == false)))
+          goto bad;
+        if (actP->vars && (actP->kind == CepActionStep))
+        {
+          snprintf(why, sizeof(why), "a 'step' with ${...} in its target - not yet");
+          goto bad;
+        }
+        if (actP->vars)
+          ruleP->vars = true;
+        ++ruleP->actions;
+      }
     }
 
     for (int ix = 0; ix < ruleP->events; ix++)

@@ -84,6 +84,7 @@ that failed.
 | `when.where` | an NGSI-LD q: only updates of an entity matching it are events (`"level>50"`) - see below |
 | `when.if` | conditions on OTHER entities, asked of the broker when the rule would fire - see below |
 | `then` | the actions, run in order; one failing does not stop the others |
+| `else` | the actions when `when.if` does not hold - see [else](#else) |
 | `then[].entity` | the target: one entity |
 | `then[].type`, `then[].q` | the target: every entity of the type (matching the q, if given) - instead of `entity` |
 | `then[].set` | `{ "<attribute>": <value>, ... }` - PATCHed as Properties |
@@ -331,6 +332,34 @@ not hold`. One condition within one entity is the q's own: `illuminance<20;occup
 Left out, with the reason: an empty group, `all` and `any` in one object, a group with other members
 (`entity`, `q`, ...).
 
+### else
+
+`else`, beside `then` (a JsonProperty, a list of actions of the same kinds): what the rule does when its `if`
+does not hold. The `if` is asked once, then exactly one list runs - `then` or `else`.
+
+One switch, two lights in a meeting room - "more light": the first light on, or, if it is on already, the second:
+
+```json
+"when": { "type": "JsonProperty", "json": {
+  "entity": "urn:ngsi-ld:WallSwitch:meeting", "attribute": "press",
+  "if": { "entity": "urn:ngsi-ld:Light:a", "q": "on==false" } } },
+"then": { "type": "JsonProperty", "json": [ { "entity": "urn:ngsi-ld:Light:a", "set": { "on": true } } ] },
+"else": { "type": "JsonProperty", "json": [ { "entity": "urn:ngsi-ld:Light:b", "set": { "on": true } } ] }
+```
+
+Two rules with opposite `if`s on the same event do not do this: they race - the first one's PATCH can reach the
+broker before the second one's `if` is asked, and both run.
+
+- A rule with `else` that fires either way counts in `fired`; `firedElse` counts the times `else` ran. The log:
+  `'if' on==false does not hold - else`, then `fired - else`.
+- `else` without an `if`, or not a non-empty list: the rule is left out, with the reason.
+- Actions are numbered on across both lists (`then`'s 1 and 2, `else`'s 3): `lastError`'s `action 3` is
+  `else`'s first.
+- With `--pdp`, the rule's signature covers `else` too.
+- `/dry-run` shows the branch: `"else": true` and `why` on the fire.
+
+The test `cep_rule_else` runs it.
+
 `if` is asked of the broker, not watched: corCep keeps no copy of the other entity, and its updates are not events.
 
 ## Statistics
@@ -342,6 +371,7 @@ corCep writes each rule's statistics to its Rule entity, with `POST /entities/<r
 | `fired` | the times the rule fired - the count goes on from the entity's own value after a restart |
 | `droppedMatches` | open matches dropped because a rule had 32 for one entity already - written once there is one |
 | `droppedValues` | window values dropped because a window held 10000 already - written once there is one |
+| `firedElse` | of `fired`, the times the `if` did not hold and `else` ran - written once there is one; goes on from the entity's own value |
 | `droppedActions` | PATCHes dropped - not sent within `--retry-for`, or 100 waiting for one entity already - since corCep started; written once there is one. See [Actions on their way](#actions-on-their-way) |
 | `firedAt` | the last time it fired, a DateTime |
 | `lastError` | the last action that failed and why; `observedAt` is when |
@@ -402,11 +432,11 @@ knows it (in a data space connector: the author's `verifiableCredential`) and th
 
 ```json
 { "iss": "https://editor.example", "sub": "alice", "verifiableCredential": { ... },
-  "rule": { "when": { ... }, "then": [ ... ] } }
+  "rule": { "when": { ... }, "then": [ ... ], "else": [ ... ] } }
 ```
 
 With `--pdp`, a rule is left out (with the reason) when it has no `author`, the signature or issuer is not right,
-or `"rule"` is not its `when` and `then` - a rule changed without the editor does not run. Compared as JSON:
+or `"rule"` is not its `when`, `then` and `else` (when it has one) - a rule changed without the editor does not run. Compared as JSON:
 member order and number form (`1` / `1.0`) do not matter. An `exp`, if the signature has one, is checked when the
 rules are read. corCep never holds the author's access token.
 
@@ -671,7 +701,8 @@ too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JW
 | `cep_action_retry` | a PATCH answered 503 retried, and the one after it on the same entity waits - in order; another entity's goes at once; no answer for longer than `--retry-for`: dropped, `droppedActions`, `lastError`; a 404 not retried |
 | `cep_queue_bound` | a full event queue drops its oldest notifications, logged; all answered 204 - the broker counts no failure, no cooldown follows |
 | `cep_action_create_delete` | `create` with an id made each time, and with one given (twice: 409, `lastError`); `delete` of a group, of one id (twice: no error); create, set, delete of one entity in one rule - in order |
-| `cep_author_rights` | `--pdp`: unsigned, edited, foreign-key and wrong-issuer rules left out; a denied fixed target in `lastError` when read; a group written only where allowed; decisions kept; the PDP down - waited for, then written; a rule's signature refused by `/dry-run` |
+| `cep_rule_else` | `else`: then when the `if` holds, else when not - one branch per match; `firedElse`; `else` without `if` and an empty `else` left out; `/dry-run` shows the branch |
+| `cep_author_rights` | `--pdp`: unsigned, edited (an `else` too), foreign-key and wrong-issuer rules left out; a denied fixed target in `lastError` when read; a group written only where allowed; decisions kept; the PDP down - waited for, then written; a rule's signature refused by `/dry-run` |
 | `cep_action_vars` | `${entity}`, `${<event>.entity}`, `${<event>.value}` (typed, and as text), a window's `${t.avg}`, a q made from an event; a quote into the q and a space into an id refused; bad names left out; `/dry-run` resolves them |
 | `cep_state` | `--state`: a match half done, a window, an absence's deadline and a step over a stop and a crash; a deadline passed while down starts again; a file that is not a state |
 | `cep_rule_stats` | `fired`, `firedAt`, `lastError` on the Rule entity; no reload from them; the count survives a restart |

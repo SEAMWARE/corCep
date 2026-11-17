@@ -210,7 +210,9 @@ typedef struct CepRule
   CepCondition*   condV;                         // 'if': every one must hold when the pattern matches - each a leaf or a group
   int             conds;
   CepAction*      actionV;
-  int             actions;
+  int             actions;                       // then's and else's
+  int             thens;                         // the first 'thens' are then's; the rest else's (the 'if' does not hold)
+  long            firedElseBase;                 // 'firedElse' as the Rule entity holds it
   long            firedBase;                     // 'fired' as the Rule entity holds it - where the count goes on from
 } CepRule;
 
@@ -312,7 +314,7 @@ extern bool  keysInit(const char* jwks, const char* authorJwks, int refreshS, ch
 extern void  keysRefreshNow(void);
 extern bool  authorInit(const char* pdp, const char* issuer, char* why, int whyLen);
 extern bool  authorOn(void);
-extern bool  authorVerify(CorAlloc* allocP, const char* jws, CorNode* whenP, CorNode* thenP, char** tokenP, char* why, int whyLen);
+extern bool  authorVerify(CorAlloc* allocP, const char* jws, CorNode* whenP, CorNode* thenP, CorNode* elseP, char** tokenP, char* why, int whyLen);
 extern int   authorMay(CorAlloc* allocP, const char* token, const char* method, const char* path, const char* body, char* why, int whyLen);
 extern void dryRunRequest(struct CorHttpConn* connP);
 

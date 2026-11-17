@@ -9,7 +9,7 @@
 // Who the author is: the rule's 'author', a JWS the rule editor signs when the rule is saved - its payload the
 // author's identity as the editor knows it (in a data space connector: the author's verifiableCredential) and the
 // rule itself ("rule": { "when", "then" }). corCep checks the signature against --author-jwks, the issuer against
-// --author-issuer, and that "rule" is the rule's when and then - a rule edited without the editor (its signature
+// --author-issuer, and that "rule" is the rule's when, then (and else) - a rule edited without the editor (its signature
 // not made again) is left out. corCep never holds the author's access token.
 //
 // What the author may: the policy decision point (--pdp, OPA's data API: POST <url> { "input": ... }, answer
@@ -153,7 +153,7 @@ static bool treeEqual(CorNode* aP, CorNode* bP)
 // authorVerify - a rule's 'author' (keyValues: the JWS) checked: signed by a key of the set, by --author-issuer,
 // for this rule's when and then. True: *tokenP the JWS; false: why
 //
-bool authorVerify(CorAlloc* allocP, const char* jws, CorNode* whenP, CorNode* thenP, char** tokenP, char* why, int whyLen)
+bool authorVerify(CorAlloc* allocP, const char* jws, CorNode* whenP, CorNode* thenP, CorNode* elseP, char** tokenP, char* why, int whyLen)
 {
   if (jws == NULL)
   {
@@ -177,9 +177,12 @@ bool authorVerify(CorAlloc* allocP, const char* jws, CorNode* whenP, CorNode* th
   CorNode* sWhen = (ruleP != NULL) ? corTreeLookup(ruleP, "when") : NULL;
   CorNode* sThen = (ruleP != NULL) ? corTreeLookup(ruleP, "then") : NULL;
 
-  if ((sWhen == NULL) || (sThen == NULL) || (whenP == NULL) || (thenP == NULL) || (treeEqual(sWhen, whenP) == false) || (treeEqual(sThen, thenP) == false))
+  CorNode* sElse = (ruleP != NULL) ? corTreeLookup(ruleP, "else") : NULL;
+  bool     elseOk = ((sElse == NULL) && (elseP == NULL)) || ((sElse != NULL) && (elseP != NULL) && treeEqual(sElse, elseP));
+
+  if ((sWhen == NULL) || (sThen == NULL) || (whenP == NULL) || (thenP == NULL) || (treeEqual(sWhen, whenP) == false) || (treeEqual(sThen, thenP) == false) || (elseOk == false))
   {
-    snprintf(why, whyLen, "'author' signs another rule - its \"rule\" is not this rule's when and then (edited after it was signed?)");
+    snprintf(why, whyLen, "'author' signs another rule - its \"rule\" is not this rule's when, then and else (edited after it was signed?)");
     return false;
   }
 
