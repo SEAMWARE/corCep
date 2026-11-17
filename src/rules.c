@@ -1274,8 +1274,25 @@ CepRules* rulesParse(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ct
     for (CorNode* aP = thenP->value.head; aP != NULL; aP = aP->next)
     {
       memset(&ruleP->actionV[ruleP->actions], 0, sizeof(CepAction));
-      if (actionParse(&rP->alloc, ruleP, aP, &ruleP->actionV[ruleP->actions], why, sizeof(why)) == false)
+      CepAction* actP = &ruleP->actionV[ruleP->actions];
+
+      if (actionParse(&rP->alloc, ruleP, aP, actP, why, sizeof(why)) == false)
         goto bad;
+
+      //
+      // ${...}: each one a value the rule can give - the target, the q, the values
+      //
+      if (((actP->entity != NULL) && (varsCheck(ruleP, actP->entity, &actP->vars, why, sizeof(why)) == false)) ||
+          ((actP->q      != NULL) && (varsCheck(ruleP, actP->q,      &actP->vars, why, sizeof(why)) == false)) ||
+          ((actP->set    != NULL) && (varsCheckTree(ruleP, actP->set, &actP->vars, why, sizeof(why)) == false)))
+        goto bad;
+      if (actP->vars && (actP->kind == CepActionStep))
+      {
+        snprintf(why, sizeof(why), "a 'step' with ${...} in its target - not yet");
+        goto bad;
+      }
+      if (actP->vars)
+        ruleP->vars = true;
       ++ruleP->actions;
     }
 

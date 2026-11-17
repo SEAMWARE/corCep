@@ -681,23 +681,33 @@ static void windowFeed(State* sP, CepRule* ruleP, Part* pP, double v, long long 
 
 // -----------------------------------------------------------------------------
 //
+// aggregateOf - a window's aggregate - the rule's own; false: no value
 // windowHolds - the aggregate of a window, within all of its bounds
 //
-static bool windowHolds(CepRule* ruleP, Part* pP)
+static bool aggregateOf(CepRule* ruleP, Part* pP, double* aP)
 {
-  Ring*  rP = &pP->ring;
-  double a;
+  Ring* rP = &pP->ring;
 
   if (ruleP->aggregate == CepAggCount)
-    a = rP->len;
+    *aP = rP->len;
   else if (rP->len == 0)
     return false;
   else if (ruleP->aggregate == CepAggSum)
-    a = pP->sum;
+    *aP = pP->sum;
   else if (ruleP->aggregate == CepAggAvg)
-    a = pP->sum / rP->len;
+    *aP = pP->sum / rP->len;
   else
-    a = ringAt(rP, 0)->v;                        // min, max: the deque's front
+    *aP = ringAt(rP, 0)->v;                      // min, max: the deque's front
+
+  return true;
+}
+
+static bool windowHolds(CepRule* ruleP, Part* pP)
+{
+  double a;
+
+  if (aggregateOf(ruleP, pP, &a) == false)
+    return false;
 
   if ((ruleP->bounds & (1u << CepBoundGt)) && !(a >  ruleP->boundV[CepBoundGt])) return false;
   if ((ruleP->bounds & (1u << CepBoundGe)) && !(a >= ruleP->boundV[CepBoundGe])) return false;
@@ -705,6 +715,34 @@ static bool windowHolds(CepRule* ruleP, Part* pP)
   if ((ruleP->bounds & (1u << CepBoundLe)) && !(a <= ruleP->boundV[CepBoundLe])) return false;
 
   return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// patternsAggregate - a window rule's aggregate now, in the partition <key> ("" - not partitioned): its own
+// aggregate (avg, min, max, sum, count) - for ${<event>.<agg>} (vars.c). False: no value (no rule state, no values)
+//
+bool patternsAggregate(CepPatterns* psP, CepRule* ruleP, const char* key, double* aP)
+{
+  State* sP = NULL;
+
+  for (State* xP = psP->stateList; (xP != NULL) && (sP == NULL); xP = xP->next)
+  {
+    if (strcmp(xP->id, ruleP->id) == 0)
+      sP = xP;
+  }
+  if ((sP == NULL) || (ruleP->kind != CepPatternWindow))
+    return false;
+
+  Part* pP = NULL;
+  for (Part* xP = sP->parts; (xP != NULL) && (pP == NULL); xP = xP->next)
+  {
+    if (strcmp(xP->key, key) == 0)
+      pP = xP;
+  }
+  return (pP != NULL) && aggregateOf(ruleP, pP, aP);
 }
 
 

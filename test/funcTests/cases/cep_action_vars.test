@@ -1,0 +1,221 @@
+#
+# FILE            cep_action_vars.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# ${...} in actions (src/vars.c): ${entity}, ${<event>.entity}, ${<event>.value}, a window's ${<event>.avg} - in a
+# target, a q, the values of set and create. One ${...} alone keeps the value's type; in a longer string it is text.
+# Values from the devices are checked: a q string only between quotes and without a quote in it, an id without
+# spaces or quotes - else the action fails (lastError). A name the rule cannot give: the rule is left out.
+#
+--NAME--
+${...} in actions: entity, event entity and value, a window's avg - typed or as text; checked for a q and an id
+
+--TAGS--
+cep action vars
+
+--INIT--
+cepTestInit
+
+--RUN--
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": $2}, \"then\": {\"type\": \"JsonProperty\", \"json\": $3}}"; }
+kv() { entityKv "$1" | python3 -I -c 'import json, sys; d = json.load(sys.stdin); print(json.dumps({k: d[k] for k in sys.argv[1:] if k in d}, sort_keys=True))' "${@:2}"; }
+ids() { curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities?type=$1&options=keyValues" |
+        python3 -I -c 'import json, sys; [print(json.dumps({k: v for k, v in sorted(e.items()) if k != "id"})) for e in json.load(sys.stdin)]'; }
+ruleErr() { curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/urn:ngsi-ld:Rule:$1?options=keyValues&pick=lastError" |
+            python3 -I -c 'import json, sys; print(json.load(sys.stdin).get("lastError", "-"))'; }
+S1=urn:ngsi-ld:WallSwitch:s1
+S2=urn:ngsi-ld:WallSwitch:s2
+DIAL=urn:ngsi-ld:Dial:d1
+T=urn:ngsi-ld:Thermometer:t1
+
+
+echo "01. Two switches, a dial naming a room, lights in two rooms, a thermometer, a display; rules with \${...}; four not right"
+echo "======================================================================================================================"
+for s in $S1 $S2; do ngsildStatus POST /entities "{\"id\": \"$s\", \"type\": \"WallSwitch\", \"press\": {\"type\": \"Property\", \"value\": 0}}"; done
+ngsildStatus POST /entities "{\"id\": \"$DIAL\", \"type\": \"Dial\", \"room\": {\"type\": \"Property\", \"value\": \"none\"}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:a", "type": "Light", "room": {"type": "Property", "value": "r1"}, "on": {"type": "Property", "value": false}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:b", "type": "Light", "room": {"type": "Property", "value": "r2"}, "on": {"type": "Property", "value": false}}'
+ngsildStatus POST /entities "{\"id\": \"$T\", \"type\": \"Thermometer\", \"temp\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Display:x", "type": "Display", "avg": {"type": "Property", "value": 0}}'
+rule mark  '{"type": "WallSwitch", "attribute": "press"}' '[{"entity": "${entity}", "set": {"last": "${press.value}", "note": "pressed ${press.value} on ${press.entity}"}}]'
+rule log   '{"type": "WallSwitch", "attribute": "press"}' '[{"create": {"type": "Log", "from": "${entity}", "value": "${press.value}"}}]'
+rule room  "{\"entity\": \"$DIAL\", \"attribute\": \"room\"}" '[{"type": "Light", "q": "room==\"${room.value}\"", "set": {"on": true}}]'
+rule ptr   "{\"entity\": \"$DIAL\", \"attribute\": \"room\"}" '[{"entity": "urn:ngsi-ld:Light:${room.value}", "set": {"seen": true}}]'
+rule avg   "{\"events\": [{\"event\": \"t\", \"entity\": \"$T\", \"attribute\": \"temp\"}], \"pattern\": {\"window\": \"t\", \"for\": \"PT1M\", \"avg\": {\"gt\": 20}}}" '[{"entity": "urn:ngsi-ld:Display:x", "set": {"avg": "${t.avg}"}}]'
+rule bad1  '{"type": "WallSwitch", "attribute": "press"}' '[{"entity": "${entity}", "set": {"x": "${nosuch.value}"}}]'
+rule bad2  "{\"events\": [{\"event\": \"t\", \"entity\": \"$T\", \"attribute\": \"temp\"}], \"pattern\": {\"window\": \"t\", \"for\": \"PT1M\", \"avg\": {\"gt\": 20}}}" '[{"entity": "urn:ngsi-ld:Display:x", "set": {"avg": "${t.sum}"}}]'
+rule bad3  '{"type": "WallSwitch", "attribute": "press"}' '[{"entity": "${entity}", "set": {"x": "${press.colour}"}}]'
+rule bad4  '{"type": "WallSwitch", "attribute": "press"}' '[{"entity": "${entity", "set": {"x": 1}}]'
+cepStart --stats-interval 0
+grep -o "rule urn:ngsi-ld:Rule:.* left out: .*" "$CEP_TEST_DIR/corCep.log" | sort
+echo
+echo
+
+
+echo "02. s1 pressed with 3, s2 with 7: each switch marked with its own press - a number stays a number; two logs"
+echo "==========================================================================================================="
+attrSet $S1 press 3
+attrSet $S2 press 7
+sleep 0.6
+kv $S1 last note
+kv $S2 last note
+ids Log | sort
+echo
+echo
+
+
+echo "03. The dial to \"r1\": the lights of r1 on, r2's not - the q made from the event; 'ptr' fails: Light:r1 is no entity"
+echo "===================================================================================================================="
+curl -s -o /dev/null -X PATCH -H "NGSILD-Tenant: $(cepTenant)" -H "Content-Type: application/json" -d '{"room": {"type": "Property", "value": "r1"}}' "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$DIAL/attrs"
+sleep 0.6
+kv urn:ngsi-ld:Light:a on
+kv urn:ngsi-ld:Light:b on
+ruleErr ptr | sed 's/"detail":"[^"]*"/"detail":"..."/'
+echo
+echo
+
+
+echo "04. A room with a quote in it, and with a space: not into the q, not into an id - the actions fail, no light changes"
+echo "====================================================================================================================="
+curl -s -o /dev/null -X PATCH -H "NGSILD-Tenant: $(cepTenant)" -H "Content-Type: application/json" -d '{"room": {"type": "Property", "value": "r2\" ; on==false"}}' "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$DIAL/attrs"
+sleep 0.6
+ruleErr room
+kv urn:ngsi-ld:Light:b on
+curl -s -o /dev/null -X PATCH -H "NGSILD-Tenant: $(cepTenant)" -H "Content-Type: application/json" -d '{"room": {"type": "Property", "value": "r 2"}}' "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$DIAL/attrs"
+sleep 0.6
+ruleErr ptr
+echo
+echo
+
+
+echo "05. Temperatures 18, 26: the average starts to be above 20 - 22 on the display"
+echo "=============================================================================="
+attrSet $T temp 18
+sleep 0.2
+attrSet $T temp 26
+sleep 0.6
+kv urn:ngsi-ld:Display:x avg
+echo
+echo
+
+
+echo "06. /dry-run resolves them too: a room's lights from the dial's value; a quote in it - the action failed"
+echo "======================================================================================================"
+cepStop
+dryRunKeys > /dev/null
+cepStart --jwks "$CEP_TEST_DIR/jwks.json" --issuer http://editor.test
+TOKEN=$(dryRunToken --claims '{"realm_access": {"roles": ["ngsild-write"]}}')
+ROOM='{"id": "urn:ngsi-ld:Rule:room", "type": "Rule",
+       "when": {"json": {"entity": "urn:ngsi-ld:Dial:d1", "attribute": "room"}},
+       "then": {"json": [{"type": "Light", "q": "room==\"${room.value}\"", "set": {"on": true, "by": "${entity}"}}]}}'
+dryRunPost "$TOKEN" "{\"start\": \"2026-11-17T18:00:00Z\", \"for\": \"PT10S\", \"rules\": [$ROOM],
+                      \"entities\": [{\"id\": \"urn:ngsi-ld:Light:a\", \"type\": \"Light\", \"room\": \"r1\"}, {\"id\": \"urn:ngsi-ld:Light:b\", \"type\": \"Light\", \"room\": \"r2\"}],
+                      \"events\": [{\"at\": 0, \"entity\": \"urn:ngsi-ld:Dial:d1\", \"type\": \"Dial\", \"attribute\": \"room\", \"value\": \"r2\"},
+                                  {\"at\": 1000, \"entity\": \"urn:ngsi-ld:Dial:d1\", \"type\": \"Dial\", \"attribute\": \"room\", \"value\": \"r\\\"1\"}]}"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. Two switches, a dial naming a room, lights in two rooms, a thermometer, a display; rules with ${...}; four not right
+======================================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+rule urn:ngsi-ld:Rule:bad1 left out: '${nosuch.value}' - no event 'nosuch' in the rule's pattern
+rule urn:ngsi-ld:Rule:bad2 left out: '${t.sum}' - sum: a window rule's own aggregate only
+rule urn:ngsi-ld:Rule:bad3 left out: '${press.colour}' - 'colour': entity, value, or a window's aggregate
+rule urn:ngsi-ld:Rule:bad4 left out: '${entity' - a '${' without its '}'
+
+
+02. s1 pressed with 3, s2 with 7: each switch marked with its own press - a number stays a number; two logs
+===========================================================================================================
+{"last": 3, "note": "pressed 3 on urn:ngsi-ld:WallSwitch:s1"}
+{"last": 7, "note": "pressed 7 on urn:ngsi-ld:WallSwitch:s2"}
+{"from": "urn:ngsi-ld:WallSwitch:s1", "type": "Log", "value": 3}
+{"from": "urn:ngsi-ld:WallSwitch:s2", "type": "Log", "value": 7}
+
+
+03. The dial to "r1": the lights of r1 on, r2's not - the q made from the event; 'ptr' fails: Light:r1 is no entity
+====================================================================================================================
+{"on": true}
+{"on": false}
+action 1: PATCH urn:ngsi-ld:Light:r1: {"type":"https://uri.etsi.org/ngsi-ld/errors/ResourceNotFound","title":"Not Found","status":404,"detail":"..."}
+
+
+04. A room with a quote in it, and with a space: not into the q, not into an id - the actions fail, no light changes
+=====================================================================================================================
+action 1: ${room.value} = "r2\" ; on==false" - not for the q (a string goes between quotes, without a quote in it; else a number or a boolean)
+{"on": false}
+action 1: ${room.value} = "r 2" - not for an entity id
+
+
+05. Temperatures 18, 26: the average starts to be above 20 - 22 on the display
+==============================================================================
+{"avg": 22}
+
+
+06. /dry-run resolves them too: a room's lights from the dial's value; a quote in it - the action failed
+======================================================================================================
+POST /dry-run: 200
+{
+  "end": 10000,
+  "fires": [
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:b"
+          ],
+          "q": "room==\"r2\"",
+          "set": {
+            "by": "urn:ngsi-ld:Dial:d1",
+            "on": true
+          },
+          "type": "Light"
+        }
+      ],
+      "at": 0,
+      "entity": "urn:ngsi-ld:Dial:d1",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:room",
+      "time": "2026-11-17T18:00:00.000Z"
+    },
+    {
+      "actions": [
+        {
+          "failed": "${room.value} = \"r\\\"1\" - not for the q (a string goes between quotes, without a quote in it; else a number or a boolean)"
+        }
+      ],
+      "at": 1000,
+      "entity": "urn:ngsi-ld:Dial:d1",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:room",
+      "time": "2026-11-17T18:00:01.000Z"
+    }
+  ],
+  "leftOut": [],
+  "start": "2026-11-17T18:00:00.000Z",
+  "truncated": false
+}
+
+

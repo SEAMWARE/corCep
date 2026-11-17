@@ -49,7 +49,7 @@ endif
 
 CFLAGS      = $(OPT) -Wall -Werror -Wundef -Wno-format-truncation -fstack-protector-all -DCEP_WITH_DRY_RUN=$(DRY_RUN) -I$(COR_LIBS) -MMD -MP $(EXTRA_CFLAGS)
 
-SOURCES     = src/corCep.c src/broker.c src/rules.c src/subs.c src/listener.c src/engine.c src/pattern.c src/schedule.c src/token.c src/state.c src/sender.c $(DRY_RUN_SOURCES)
+SOURCES     = src/corCep.c src/broker.c src/rules.c src/subs.c src/listener.c src/engine.c src/pattern.c src/schedule.c src/token.c src/state.c src/sender.c src/vars.c $(DRY_RUN_SOURCES)
 OBJDIR      = obj/$(BUILD)
 OBJECTS     = $(SOURCES:src/%.c=$(OBJDIR)/%.o)
 DEPS        = $(OBJECTS:.o=.d)

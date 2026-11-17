@@ -96,6 +96,7 @@ typedef struct CepAction
   long long      everyMs;                        // Step
   long long      forMs;                          // Step: the time limit
   int            until;                          // Step: the event that stops it, an index into the rule's untilV; -1: none
+  bool           vars;                           // a ${...} in its target, q or values (vars.c)
 } CepAction;
 
 typedef enum CepCondKind
@@ -184,6 +185,7 @@ typedef struct CepRule
   int             steps;
   long long       withinMs;                      // Seq, All, Repeat
   long long       forMs;                         // Absent, Window
+  bool            vars;                          // an action has a ${...}: the events' latest values are kept (vars.c)
   int             afterEv;                       // Absent: the event that starts the deadline (an index into eventV), the absent one clears it; -1: none - each absent event moves it on
   CepWindowAgg    aggregate;                     // Window
   double          boundV[4];                     // Window: by CepBound
@@ -268,8 +270,21 @@ extern void         patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch,
 extern long long    patternsTimers(CepPatterns* psP, CepRules* rulesP, long long now, CepFireFn fire, void* ctx);   // the expired ones run; the next deadline, 0: none
 extern long long    patternsDropped(CepPatterns* psP, const char* ruleId);     // partial matches dropped (the bound), since start
 extern long long    patternsDroppedValues(CepPatterns* psP, const char* ruleId);   // window values dropped (the bound), since start
+extern bool         patternsAggregate(CepPatterns* psP, CepRule* ruleP, const char* key, double* aP);   // a window rule's aggregate now; false: no value
 extern CorNode*     patternsSave(CepPatterns* psP, CorAlloc* aP, long long nowMono, long long nowWall);   // the state, for --state
 extern int          patternsLoad(CepPatterns* psP, CorNode* topP, long long nowMono, long long nowWall);  // before the first adopt; rules read, -1: not a state
+
+//
+// ${...} (vars.c) - the events' latest values, and an action resolved for a fire
+//
+typedef struct CepVars CepVars;
+extern CepVars*  varsNew(void);
+extern void      varsFree(CepVars* vP);
+extern void      varsNote(CepVars* vP, const char* ruleId, const char* key, const char* event, const char* entity, const char* valueJson);
+extern void      varsKeep(CepVars* vP, CepRules* rulesP);                                   // the records of rules gone dropped
+extern bool      varsCheck(CepRule* ruleP, const char* s, bool* usedP, char* why, int whyLen);
+extern bool      varsCheckTree(CepRule* ruleP, CorNode* nodeP, bool* usedP, char* why, int whyLen);
+extern bool      varsAction(CorAlloc* allocP, CepVars* vP, CepPatterns* psP, CepRule* ruleP, const char* entity, CepAction* aP, CepAction* outP, char* why, int whyLen);
 
 //
 // --state (state.c) - the patterns' state over a restart; cepStopping (corCep.c) - a SIGTERM / SIGINT came

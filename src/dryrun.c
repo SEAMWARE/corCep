@@ -347,6 +347,7 @@ typedef struct Dr
   CorAlloc*     aP;
   CepRules*     rulesP;
   CepPatterns*  psP;
+  CepVars*      varsP;                           // the events' latest values, for ${...}
   long long     startMs;                         // the wall clock at 'now' 0
   long long     now;                             // ms from the start
   DrEntity*     entities;                        // in the request's order, then the ones the events made
@@ -672,7 +673,20 @@ static void fireCb(CepRule* ruleP, const char* entity, void* ctx)
 
   CorNode* actionsP = corTreeArray(allocP, "actions");
   for (int ix = 0; ix < ruleP->actions; ix++)
-    corTreeChildAdd(actionsP, actionNode(drP, &ruleP->actionV[ix]));
+  {
+    CepAction* aP = &ruleP->actionV[ix];
+    CepAction  resolved;
+    char       why[600];
+
+    if (aP->vars && (varsAction(allocP, drP->varsP, drP->psP, ruleP, entity, aP, &resolved, why, sizeof(why)) == false))
+    {
+      CorNode* xP = corTreeObject(allocP, NULL);       // as corCep would: the action fails, the others run
+      corTreeChildAdd(xP, corTreeString(allocP, "failed", corAllocStrdup(allocP, why)));
+      corTreeChildAdd(actionsP, xP);
+      continue;
+    }
+    corTreeChildAdd(actionsP, actionNode(drP, aP->vars ? &resolved : aP));
+  }
 
   corTreeChildAdd(fP, corTreeBoolean(allocP, "fired", true));
   corTreeChildAdd(fP, actionsP);
@@ -738,6 +752,17 @@ static void eventFeed(Dr* drP, DrEvent* evP)
       continue;
     if (qMatches(drP, dP, wP->q) == false)
       continue;
+
+    for (int rx = 0; rx < drP->rulesP->rules; rx++)        // the latest values for ${...} - as corCep keeps them
+    {
+      CepRule* ruleP = &drP->rulesP->ruleV[rx];
+
+      for (int ex = 0; ruleP->vars && (ex < ruleP->events); ex++)
+      {
+        if ((ruleP->eventV[ex].watch == n) && (vP != NULL))
+          varsNote(drP->varsP, ruleP->id, ruleP->partitioned ? dP->id : "", ruleP->eventV[ex].name, dP->id, jsonText(drP->aP, vP));
+      }
+    }
 
     patternsEvent(drP->psP, drP->rulesP, n, dP->id, number ? &v : NULL, drP->now, fireCb, drP);
   }
@@ -999,12 +1024,14 @@ static CorNode* replay(CorAlloc* aP, CorNode* bodyP, char* why, int whyLen)
 
   dr.rulesP = rulesParse(rulesP, (time_t) (dr.startMs / 1000), leftOutCb, &leftOut);
   dr.psP    = patternsNew(dr.startMs);
+  dr.varsP  = varsNew();
   dr.firesP = corTreeArray(aP, "fires");
 
-  if ((dr.rulesP == NULL) || (dr.psP == NULL))
+  if ((dr.rulesP == NULL) || (dr.psP == NULL) || (dr.varsP == NULL))
   {
     rulesFree(dr.rulesP);
     patternsFree(dr.psP);
+    varsFree(dr.varsP);
     snprintf(why, whyLen, "out of memory");
     return NULL;
   }
@@ -1023,6 +1050,7 @@ static CorNode* replay(CorAlloc* aP, CorNode* bodyP, char* why, int whyLen)
 
   rulesFree(dr.rulesP);
   patternsFree(dr.psP);
+  varsFree(dr.varsP);
 
   CorNode* outP = corTreeObject(aP, NULL);
   corTreeChildAdd(outP, corTreeString(aP, "start", isoOf(aP, dr.startMs)));

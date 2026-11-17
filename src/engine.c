@@ -62,6 +62,7 @@ int queueMax = 10000;                            // --queue-max: event notificat
 
 static CepRules*        rules      = NULL;       // the generation running
 static CepPatterns*     patterns   = NULL;       // its patterns' state - the host's clock
+static CepVars*         vars       = NULL;       // the events' latest values, for ${...} (vars.c)
 static bool             stateDirty = false;      // the patterns' state changed since --state was last written
 
 int statsInterval = 10;                          // --stats-interval
@@ -643,6 +644,15 @@ static bool entityCreate(CorAlloc* allocP, CepRule* ruleP, int action, CepAction
 //
 static bool actionRun(CorAlloc* allocP, CepRule* ruleP, int action, CepAction* aP, const char* entity, char* why, int whyLen)
 {
+  CepAction resolved;                            // its ${...} for this fire
+
+  if (aP->vars)
+  {
+    if (varsAction(allocP, vars, patterns, ruleP, entity, aP, &resolved, why, whyLen) == false)
+      return false;
+    aP = &resolved;
+  }
+
   if (aP->kind == CepActionStep)
     return stepperStart(allocP, ruleP, aP, entity, why, whyLen);
 
@@ -1082,6 +1092,24 @@ static void eventHandle(CorAlloc* allocP, int sub, char* body)
 
     if (number)
       v = (vP->type == CorInt) ? (double) vP->value.i : vP->value.f;
+    //
+    // The latest value of each event this is, for the rules with a ${...} - before the patterns: a fire now uses it
+    //
+    const char* valueJson = NULL;
+    for (int rx = 0; rx < rules->rules; rx++)
+    {
+      CepRule* ruleP = &rules->ruleV[rx];
+
+      for (int ex = 0; ruleP->vars && (ex < ruleP->events); ex++)
+      {
+        if (ruleP->eventV[ex].watch != n)
+          continue;
+        if (valueJson == NULL)
+          valueJson = jsonText(allocP, vP);
+        varsNote(vars, ruleP->id, ruleP->partitioned ? idP->value.s : "", ruleP->eventV[ex].name, idP->value.s, valueJson);
+      }
+    }
+
     patternsEvent(patterns, rules, n, idP->value.s, number ? &v : NULL, nowMs(), fireCb, allocP);
     stateDirty = true;
   }
@@ -1255,6 +1283,7 @@ static void rulesReload(void)
   rules = newP;
   patternsAdopt(patterns, rules, nowMs());
   stateDirty = true;
+  varsKeep(vars, rules);
 
   Stepper** stepPP = &stepperList;                     // the steps of rules gone stop
   while (*stepPP != NULL)
@@ -1317,7 +1346,8 @@ void engineRun(void)
   corAllocBufferInit(&alloc, buf, sizeof(buf), 256 * 1024, NULL, "corCep event");
 
   patterns = patternsNew(0);
-  if (patterns == NULL)
+  vars     = varsNew();
+  if ((patterns == NULL) || (vars == NULL))
   {
     logLine("out of memory for the patterns' state");
     exit(1);

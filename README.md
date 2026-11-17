@@ -89,6 +89,7 @@ that failed.
 | `then[].until` | with `step`: the event that stops it |
 | `then[].create` | `{ "id"?, "type", "<attribute>": <value>, ... }` - an entity created (`POST /entities`), the values as Properties; no target besides. No `id`: corCep makes one each time, `urn:ngsi-ld:<type>:<the rule id's last part>-<ms>-<n>` - an alert, a log entry. One there already (409): `lastError` |
 | `then[].delete` | `true` - the target deleted, one entity or every one of the group; or `"<id>"` - that entity (no `entity` besides). Gone already (404): done, no error |
+| `${...}` | in `entity`, `q`, and the values of `set` and `create`: a value of the match - see [Values from the match](#values-from-the-match) |
 | `enabled` | a Property; `false`: the rule is not run |
 | `location` | a GeoProperty, a Point: where the sun of an `at: "sunrise"` / `"sunset"` rule is |
 
@@ -387,6 +388,39 @@ Without `--broker-cert`, an `https://` broker's certificate is checked against t
 
 The test `cep_broker_auth` runs both against a broker of its own (HTTPS, OIDC with a JWK Set file - `broker.sh up` starts it).
 
+## Values from the match
+
+An action's target, q and values may name the match:
+
+| | |
+|---|---|
+| `${entity}` | the entity the rule fired for (a schedule fires for none: the action fails) |
+| `${<event>.entity}` | the entity of the latest `<event>` the rule saw - for a rule on a type, the latest of that entity |
+| `${<event>.value}` | that event's value: the notified attribute's, any JSON |
+| `${<event>.avg}` (`min`, `max`, `sum`, `count`) | a window rule's aggregate now - the rule's own (an `avg` window gives `avg`) |
+
+```json
+"then": [
+  { "entity": "${entity}", "set": { "last": "${press.value}", "note": "pressed ${press.value} on ${press.entity}" } },
+  { "type": "Light", "q": "room==\"${room.value}\"", "set": { "on": true } },
+  { "create": { "type": "Log", "from": "${entity}", "value": "${press.value}" } }
+]
+```
+
+- A string that is one `${...}` and nothing else becomes the value, its type kept: `"${press.value}"` of a press of
+  3 is the number 3. In a longer string the value is written in as text.
+- The values come from the devices - whoever can write an entity writes them - so they are checked first: into a
+  `q`, a string only between quotes and without a quote or backslash in it (else a number or a boolean); into an
+  entity id, nothing with a space, a quote, `<`, `>`, `{`, `}`, `|`, `\`, `^`. One that does not pass: the action
+  fails, the rule's `lastError` says why, the other actions run.
+- A name the rule cannot give - an event not in its pattern, another aggregate than the window's - leaves the
+  rule out, with the reason.
+- The latest values are kept in memory: after a restart, an event's values come with its next event.
+- `/dry-run` resolves them the same way; a value that does not pass shows as `{ "failed": "..." }`.
+- Not yet: another attribute of the event's entity (`${press.entity.roomId}`), and `${...}` in a `step`'s target.
+
+The test `cep_action_vars` runs it.
+
 ## Actions on their way
 
 A rule's `set`, `toggle` and `step` become PATCHes of the targets' attributes, `create` a POST, `delete` a DELETE.
@@ -586,6 +620,7 @@ too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JW
 | `cep_action_retry` | a PATCH answered 503 retried, and the one after it on the same entity waits - in order; another entity's goes at once; no answer for longer than `--retry-for`: dropped, `droppedActions`, `lastError`; a 404 not retried |
 | `cep_queue_bound` | a full event queue drops its oldest notifications, logged; all answered 204 - the broker counts no failure, no cooldown follows |
 | `cep_action_create_delete` | `create` with an id made each time, and with one given (twice: 409, `lastError`); `delete` of a group, of one id (twice: no error); create, set, delete of one entity in one rule - in order |
+| `cep_action_vars` | `${entity}`, `${<event>.entity}`, `${<event>.value}` (typed, and as text), a window's `${t.avg}`, a q made from an event; a quote into the q and a space into an id refused; bad names left out; `/dry-run` resolves them |
 | `cep_state` | `--state`: a match half done, a window, an absence's deadline and a step over a stop and a crash; a deadline passed while down starts again; a file that is not a state |
 | `cep_rule_stats` | `fired`, `firedAt`, `lastError` on the Rule entity; no reload from them; the count survives a restart |
 | `cep_pattern_seq` | a double press within 1 s fires; 1.6 s apart does not, and the second press starts a new match |
