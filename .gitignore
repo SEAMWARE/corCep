@@ -3,3 +3,4 @@ obj/
 __pycache__/
 /test/funcTests/hub/
 /coverage/
+/test/funcTests/cases/*.CB.log
