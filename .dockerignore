@@ -1,0 +1,7 @@
+obj/
+/corCep
+test/funcTests/cases/*.out
+test/funcTests/cases/*.diff
+test/funcTests/cases/*.stderr
+test/funcTests/hub/
+**/__pycache__/

@@ -1,0 +1,213 @@
+#
+# corCep's packages: the image (quay.io/seamware/corcep, amd64 + arm64) and the .debs (Ubuntu 26.04, 24.04,
+# Debian 13; amd64 + arm64).
+#
+#   a pull request touching the build    both built and tested - nothing pushed
+#   a tag v<version>                     a release: the tag must be CORCEP_VERSION (src/corCep.h); the image pushed
+#                                        as :<version>, the .debs attached to a GitHub release and added to the apt
+#                                        repository (coraine's: same repository, same signing key, its publish.sh)
+#
+# A release is a TAG on main, never a branch: `git tag -a v0.1.0 -m "corCep 0.1.0" && git push origin v0.1.0`.
+#
+# Needs, for a release:
+#   - secrets QUAY_USERNAME, QUAY_PASSWORD   a robot account that may push quay.io/seamware/corcep
+#   - variable APT_PAGES_REPO (e.g. SEAMWARE/apt), secrets APT_GPG_PRIVATE_KEY, APT_PAGES_TOKEN - as coraine's
+#     packages.yml; the apt step is skipped while APT_PAGES_REPO is not set
+#
+# arm64 runs on GitHub's arm64 runners (ubuntu-24.04-arm) - for a public repository; while corCep is private, a
+# pull request builds amd64 only.
+#
+name: Packages
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'makefile'
+      - 'docker/**'
+      - 'packaging/**'
+      - '.dockerignore'
+      - '.github/workflows/packages.yml'
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE: quay.io/seamware/corcep
+
+jobs:
+  #
+  # The version - and, for a tag, that it is the tag
+  #
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+      archs: ${{ steps.v.outputs.archs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          version=$(sed -n 's/^#define CORCEP_VERSION *"\(.*\)"/\1/p' src/corCep.h)
+          [ -n "$version" ] || { echo "::error::no CORCEP_VERSION in src/corCep.h"; exit 1; }
+          release=false
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            [ "${GITHUB_REF#refs/tags/v}" = "$version" ] || { echo "::error::tag ${GITHUB_REF#refs/tags/} is not CORCEP_VERSION $version"; exit 1; }
+            release=true
+          fi
+          if [ "${{ github.event.repository.private }}" = true ]; then archs='["amd64"]'; else archs='["amd64","arm64"]'; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "archs=$archs"     >> "$GITHUB_OUTPUT"
+          echo "corCep $version - release: $release, archs: $archs"
+
+  #
+  # The image, per architecture, on a runner of that architecture; smoke-tested: --version, and a start that finds
+  # no broker
+  #
+  image:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.version.outputs.archs) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          docker build -f docker/Dockerfile -t corcep:ci \
+            --build-arg VERSION=${{ needs.version.outputs.version }} --build-arg GIT_SHA=$GITHUB_SHA .
+      - name: Smoke
+        run: |
+          docker run --rm corcep:ci --version
+          out=$(docker run --rm corcep:ci 2>&1 || true)
+          grep -q "missing required option: --broker" <<< "$out" || { echo "$out"; exit 1; }
+          docker image ls corcep:ci --format '{{.Size}}'
+      - name: Push
+        if: needs.version.outputs.release == 'true'
+        run: |
+          echo "${{ secrets.QUAY_PASSWORD }}" | docker login quay.io -u "${{ secrets.QUAY_USERNAME }}" --password-stdin
+          tag="$IMAGE:${{ needs.version.outputs.version }}-${{ matrix.arch }}"
+          docker tag corcep:ci "$tag"
+          docker push "$tag"
+
+  #
+  # :<version> - both architectures under one tag
+  #
+  manifest:
+    needs: [version, image]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - run: |
+          echo "${{ secrets.QUAY_PASSWORD }}" | docker login quay.io -u "${{ secrets.QUAY_USERNAME }}" --password-stdin
+          v=${{ needs.version.outputs.version }}
+          refs=""
+          for a in $(jq -r '.[]' <<< '${{ needs.version.outputs.archs }}'); do refs="$refs $IMAGE:$v-$a"; done
+          docker buildx imagetools create -t "$IMAGE:$v" $refs
+          docker buildx imagetools inspect "$IMAGE:$v" | command grep Platform
+
+  #
+  # The .debs - each built in a container of its distribution, then installed in a clean one
+  #
+  deb:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        dist: ['ubuntu:26.04', 'ubuntu:24.04', 'debian:13']
+        arch: ${{ fromJSON(needs.version.outputs.archs) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker run --rm -v "$PWD:/src:ro" -v "$PWD/out:/out" ${{ matrix.dist }} bash -c 'cp -a /src /tmp/corCep && /tmp/corCep/packaging/deb/build.sh /out'
+      - name: Install, run, purge - in a clean container
+        run: docker run --rm -v "$PWD/packaging/deb:/t:ro" -v "$PWD/out:/debs:ro" ${{ matrix.dist }} bash /t/test-install.sh /debs
+      - name: Name
+        id: n
+        run: echo "name=debs-$(tr ':.' '-_' <<< '${{ matrix.dist }}')-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.n.outputs.name }}
+          path: out/
+          retention-days: 30
+
+  #
+  # A release: the GitHub release, with the .debs
+  #
+  release:
+    needs: [version, image, manifest, deb]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: debs-*
+          path: debs
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${{ needs.version.outputs.version }}
+          {
+            echo "corCep $v"
+            echo
+            echo "Image: \`$IMAGE:$v\` (amd64, arm64)."
+            echo
+            echo "Packages: Ubuntu 26.04, 24.04, Debian 13 - \`corCep --version\` names the cor-libs' commits it was built from."
+          } > notes.md
+          gh release create "v$v" debs/*.deb --repo "$GITHUB_REPOSITORY" --title "corCep $v" --notes-file notes.md
+
+  #
+  # A release: the apt repository - coraine's (one repository, one key); its publish.sh files each .deb under
+  # its distribution. Skipped until APT_PAGES_REPO is set for this repository.
+  #
+  apt:
+    needs: [version, release]
+    if: needs.version.outputs.release == 'true' && vars.APT_PAGES_REPO != ''
+    runs-on: ubuntu-latest
+    concurrency:
+      group: apt-repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: SEAMWARE/coraine
+          path: coraine
+          sparse-checkout: packaging/deb/publish.sh
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.APT_PAGES_REPO }}
+          ref: gh-pages
+          token: ${{ secrets.APT_PAGES_TOKEN }}
+          path: repo
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: debs-*
+          path: debs
+          merge-multiple: true
+      - name: reprepro
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_DOMAIN: ${{ vars.APT_DOMAIN }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq reprepro gnupg > /dev/null
+          bash coraine/packaging/deb/publish.sh repo debs/*.deb
+      - name: Push
+        working-directory: repo
+        run: |
+          git config user.name  "corCep packages"
+          git config user.email "noreply@github.com"
+          git add -A
+          git commit -qm "corcep ${{ needs.version.outputs.version }}"
+          git push origin gh-pages

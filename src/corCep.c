@@ -27,6 +27,7 @@
 #include "corRest/corRestClient.h"               // corRestClientInit, corRestClientTlsPinSet
 
 #include "corCep.h"
+#include "stack.h"                              // CORCEP_STACK - made by the makefile
 
 
 
@@ -49,6 +50,7 @@ static char* audienceArg  = NULL;
 static char* rolesClaimArg = NULL;
 static char* editorRoleArg = NULL;
 static int   jwksRefreshArg = 300;
+static bool  versionArg     = false;
 static char* pdpArg        = NULL;
 static char* authorJwksArg = NULL;
 static char* authorIssuerArg = NULL;
@@ -65,6 +67,7 @@ volatile sig_atomic_t cepStopping = 0;
 //
 static CorArg options[] =
 {
+  { "--version",    "-V",  CorArgBool,   &versionArg,   CorArgOpt, _vp false, _vp false, _vp true, "print the version - corCep's and the cor-libs' commits it was built from - and exit" },
   { "--broker",     "-b",  CorArgString, &brokerArg,    CorArgReq, NULL,      NULL,  NULL,        "the broker's base URL: http://host:port" },
   { "--port",       "-p",  CorArgInt,    &portArg,      CorArgOpt, _vp 7602,  _vp 1, _vp 65535,   "the port the broker's notifications come to" },
   { "--notify-url", "-nu", CorArgString, &notifyUrlArg, CorArgOpt, NULL,      NULL,  NULL,        "the URL the broker reaches corCep at (default: http://127.0.0.1:<port>)" },
@@ -195,6 +198,18 @@ int main(int argC, char* argV[])
   {
     fprintf(stderr, "corCep: corArgsInit failed\n");
     return 1;
+  }
+
+  //
+  // --version: before the parse - it needs no --broker
+  //
+  for (int ix = 1; ix < argC; ix++)
+  {
+    if ((strcmp(argV[ix], "--version") == 0) || (strcmp(argV[ix], "-V") == 0))
+    {
+      printf("corCep %s\n%s", CORCEP_VERSION, CORCEP_STACK);
+      return 0;
+    }
   }
 
   if (corArgsParse(argC, argV) != CorArgsOk)

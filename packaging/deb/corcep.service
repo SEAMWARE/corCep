@@ -1,0 +1,30 @@
+[Unit]
+Description=corCep - an NGSI-LD complex event processor (rules as NGSI-LD entities)
+Documentation=https://github.com/SEAMWARE/corCep
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=corcep
+Group=corcep
+# The options as CORCEP_<OPTION> variables - /etc/default/corcep
+EnvironmentFile=-/etc/default/corcep
+ExecStart=/usr/bin/corCep --state /var/lib/corcep/state.cor
+# A broker not up yet, a broker restarting: corCep exits, systemd starts it again
+Restart=on-failure
+RestartSec=5
+# SIGTERM: corCep saves its state, sends what is queued (2 s at most), exits
+TimeoutStopSec=10
+StateDirectory=corcep
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
