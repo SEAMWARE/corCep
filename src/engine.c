@@ -98,7 +98,7 @@ static Stats* statsList = NULL;
 //
 // Bounded: --queue-max event notifications, QUEUE_BYTES_MAX of their bodies. Full: the OLDEST event notifications
 // waiting are dropped to make room - an event handled late is worse than not handled (a light switched by a press
-// of a minute ago), the newest are what the home is now. Logged when the dropping starts, and how many once the
+// of a minute ago), the newest are what the place is now. Logged when the dropping starts, and how many once the
 // queue has drained to half. Never refused: a notification answered with an error makes the broker skip the
 // subscription's notifications for its endpoint's cooldown (NGSI-LD § 5.2.15 - coraine: 30 s by default).
 //

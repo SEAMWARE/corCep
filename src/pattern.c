@@ -10,7 +10,8 @@
 //           'within' of the first
 //   all     the same, the steps in any order
 //   repeat  the times of the last events within 'within'; done at 'min' of them
-//   absent  a deadline, moved on by each event; done when it passes - once, until the next event
+//   absent  a deadline, moved on by each event; done when it passes - once, until the next event. With 'after':
+//           started (again) by the 'after' event, cleared by the absent one - not started at the start
 //   window  the values of the last 'for' (numbers - the notified attribute's): sum, avg, count from a ring of
 //           them, min and max from a monotonic deque (only the values that can still be the min / max). Done when
 //           its bounds START to hold - on an event, or when a value leaves the window; again only after they have
@@ -326,7 +327,7 @@ void patternsAdopt(CepPatterns* psP, CepRules* rulesP, long long now)
       }
     }
 
-    if (fresh && (ruleP->kind == CepPatternAbsent) && (ruleP->partitioned == false))
+    if (fresh && (ruleP->kind == CepPatternAbsent) && (ruleP->partitioned == false) && (ruleP->afterEv < 0))   // 'after': its event starts it
     {
       Part* pP = partOf(sP, "");
       if (pP != NULL)
@@ -811,8 +812,13 @@ void patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch, const char* en
     case CepPatternAll:     done = feedAll(sP, ruleP, pP, ev, now); break;
     case CepPatternRepeat:  done = feedRepeat(ruleP, pP, now);       break;
     case CepPatternAbsent:
-      pP->absentAt = now + ruleP->forMs;
-      setStr(&pP->absentEntity, entity);
+      if ((ruleP->afterEv >= 0) && (ev != ruleP->afterEv))
+        pP->absentAt = 0;                        // the absent event came: no absence - cleared, not moved on
+      else
+      {
+        pP->absentAt = now + ruleP->forMs;
+        setStr(&pP->absentEntity, entity);
+      }
       break;
     case CepPatternWindow:
       if (valueP == NULL)

@@ -107,6 +107,7 @@ ISO/IEC 9075-2:2016) - sequence, alternatives, quantifiers - in JSON:
 | `{ "all": ["doorOpen", "nightMode"], "within": "PT1M" }` | both, in any order, within 1 min |
 | `{ "repeat": "press", "min": 3, "within": "PT2S" }` | three presses within 2 s |
 | `{ "absent": "motion", "for": "PT10M" }` | no motion event for 10 min (a timer, restarted by each event) |
+| `{ "absent": "moving", "for": "PT3M", "after": "still" }` | 3 min after `still` unless `moving` came (the timer started by one event, cleared by another - for a sensor that reports only changes) |
 | `{ "window": "temp", "for": "PT1H", "avg": { "gt": 26 } }` | the mean over the last hour above 26 (also `min`, `max`, `sum`, `count`) |
 | `{ "at": "sunset" }` / `{ "cron": "0 7 * * 1-5" }` | a schedule (sunset at the Rule entity's `location`; the host's local time) - built in P2.5 |
 

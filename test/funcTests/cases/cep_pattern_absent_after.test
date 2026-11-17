@@ -1,0 +1,152 @@
+#
+# FILE            cep_pattern_absent_after.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# { "absent": "moving", "for": ..., "after": "still" }: the deadline starts at 'still' and is cleared - not moved
+# on - by 'moving'. Not started at the start. For a motion sensor that reports only changes: true while people move
+# (no event while it stays true), false after its own hold time.
+#
+--NAME--
+absent ... after: the deadline started by one event, cleared by another; not at the start; over a restart
+
+--TAGS--
+cep pattern absent
+
+--INIT--
+cepTestInit
+
+--RUN--
+MS=urn:ngsi-ld:MotionSensor:room-2-14
+STATE="$CEP_TEST_DIR/state.cor"
+rm -f "$STATE"
+motion() { attrSet $MS motion $1; }
+
+
+echo "01. A motion sensor, the lights; 'still' (motion false for 1.5 s, cleared by motion true); three rules not right"
+echo "================================================================================================================"
+ngsildStatus POST /entities "{\"id\": \"$MS\", \"type\": \"MotionSensor\", \"motion\": {\"type\": \"Property\", \"value\": true}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:room-2-14", "type": "Light", "on": {"type": "Property", "value": true}}'
+events="[{\"event\": \"moving\", \"entity\": \"$MS\", \"attribute\": \"motion\", \"where\": \"motion==true\"},
+         {\"event\": \"still\",  \"entity\": \"$MS\", \"attribute\": \"motion\", \"where\": \"motion==false\"}]"
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"events\": $events, \"pattern\": $2}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"urn:ngsi-ld:Light:room-2-14\", \"set\": {\"on\": false}}]}}"; }
+rule still '{"absent": "moving", "for": "PT1.5S", "after": "still"}'
+rule bad1  '{"absent": "moving", "for": "PT1.5S", "after": "nosuch"}'
+rule bad2  '{"absent": "moving", "for": "PT1.5S", "after": "moving"}'
+rule bad3  '{"seq": ["still", "moving"], "within": "PT1S", "after": "still"}'
+cepStart --state "$STATE"
+grep -o "rule urn:ngsi-ld:Rule:.* left out: .*" "$CEP_TEST_DIR/corCep.log" | sort
+echo
+echo
+
+
+echo "02. Nothing for 2.5 s - not started at the start: not fired"
+echo "==========================================================="
+sleep 2.5
+echo "still: $(firedCount still)"
+echo
+echo
+
+
+echo "03. Still - 1.5 s later it fires, the lights off; once"
+echo "===================================================="
+motion false
+t=$(msNow)
+firedAwait still 1 3
+w=$(($(msNow) - t))
+[ $w -ge 1400 ] && [ $w -lt 2300 ] && echo "after 1.5 s - yes" || echo "after $w ms"
+entityKv urn:ngsi-ld:Light:room-2-14 | grep -o '"on": [a-z]*'
+sleep 2
+echo "still: $(firedCount still)"
+echo
+echo
+
+
+echo "04. Still, then moving after 0.7 s - cleared: not fired, 2.5 s on (people stay - no event while true)"
+echo "====================================================================================================="
+motion true
+motion false
+sleep 0.7
+motion true
+sleep 2.5
+echo "still: $(firedCount still)"
+echo
+echo
+
+
+echo "05. Still, still again 1 s later - from the second: not at 1.5 s, fired at 2.5 s"
+echo "================================================================================"
+motion false
+t=$(msNow)
+sleep 1
+attrSet $MS motion false
+firedAwait still 2 4 > /dev/null
+w=$(($(msNow) - t))
+[ $w -ge 2400 ] && [ $w -lt 3300 ] && echo "2.5 s after the first - yes" || echo "after $w ms"
+echo
+echo
+
+
+echo "06. Still, corCep stopped and started again - the deadline kept: fires 1.5 s after the still"
+echo "============================================================================================"
+motion true
+motion false
+t=$(msNow)
+sleep 0.3
+cepStop
+cepStart --state "$STATE"
+firedAwait still 1 4 > /dev/null              # a new log - the count starts again
+w=$(($(msNow) - t))
+[ $w -ge 1400 ] && [ $w -lt 2300 ] && echo "after 1.5 s - yes" || echo "after $w ms"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A motion sensor, the lights; 'still' (motion false for 1.5 s, cleared by motion true); three rules not right
+================================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+rule urn:ngsi-ld:Rule:bad1 left out: the pattern names 'nosuch' - no such event in 'events'
+rule urn:ngsi-ld:Rule:bad2 left out: 'absent': 'after' - the name of another event, the one that starts the deadline
+rule urn:ngsi-ld:Rule:bad3 left out: 'after' - with 'absent' only
+
+
+02. Nothing for 2.5 s - not started at the start: not fired
+===========================================================
+still: 0
+
+
+03. Still - 1.5 s later it fires, the lights off; once
+====================================================
+still: 1
+after 1.5 s - yes
+"on": false
+still: 1
+
+
+04. Still, then moving after 0.7 s - cleared: not fired, 2.5 s on (people stay - no event while true)
+=====================================================================================================
+still: 1
+
+
+05. Still, still again 1 s later - from the second: not at 1.5 s, fired at 2.5 s
+================================================================================
+2.5 s after the first - yes
+
+
+06. Still, corCep stopped and started again - the deadline kept: fires 1.5 s after the still
+============================================================================================
+after 1.5 s - yes
+
+

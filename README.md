@@ -118,6 +118,7 @@ A rule that is not right is left out (the log says why); the others run.
 | `{ "all": [ "door", "here" ], "within": "PT1M" }` | when each step has come, in any order, within 1 min |
 | `{ "repeat": "press", "min": 3, "within": "PT2S" }` | at the 3rd press within 2 s |
 | `{ "absent": "motion", "for": "PT10M" }` | when no `motion` has come for 10 min - once, until the next `motion`; the time counts from the start too |
+| `{ "absent": "moving", "for": "PT3M", "after": "still" }` | 3 min after a `still`, unless a `moving` came in between - `still` starts the time (again), `moving` clears it; once, until the next `still`; not at the start. See below |
 | `{ "window": "temp", "for": "PT1H", "avg": { "gt": 26 } }` | when the mean of the last hour's values STARTS to be above 26 - see below |
 | `{ "cron": "0 7 * * 1-5" }` | at 07:00 on weekdays - a schedule, no events - see below |
 | `{ "at": "sunset", "offset": "-PT30M" }` | every day half an hour before sunset - see below |
@@ -134,6 +135,32 @@ How a pattern matches - SQL:2016 row pattern recognition's defaults:
 - at most 32 open matches per rule and entity; beyond, the oldest is dropped and counted (`droppedMatches`)
 - a rule's open matches and timers survive a reload of the rules if its `when` is the same; a changed `when`
   starts afresh
+
+### `absent` ... `after`
+
+A motion sensor that reports only changes - `motion` true while people move, false after its own hold time - sends
+nothing while people stay. `absent` alone counts from the last event: from the last `true`, the lights would go off
+in the middle of a meeting. With `after`, the time starts at the event that says "quiet now" and is cleared by the
+one that says "someone here":
+
+```json
+{
+  "events": [
+    { "event": "moving", "entity": "urn:ngsi-ld:MotionSensor:room-2-14", "attribute": "motion", "where": "motion==true" },
+    { "event": "still",  "entity": "urn:ngsi-ld:MotionSensor:room-2-14", "attribute": "motion", "where": "motion==false" }
+  ],
+  "pattern": { "absent": "moving", "for": "PT3M", "after": "still" }
+}
+```
+
+| | |
+|---|---|
+| `still` | starts the time - again from now if it was running |
+| `moving` | clears it: no fire, nothing until the next `still` |
+| the start | nothing running - unlike `absent` alone, which counts from the start |
+| over a restart | kept with `--state`, as any deadline |
+
+The test `cep_pattern_absent_after` runs it.
 
 ### `window`
 
@@ -561,6 +588,7 @@ too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JW
 | `cep_pattern_supersedes` | a double press fires only the double-press rule; a single press fires the other 1 s late |
 | `cep_pattern_repeat` | the 3rd press within 2 s fires; the presses a match used are not used again |
 | `cep_pattern_absent` | no event for 1 s fires - from the start too; each event moves the deadline; once per absence |
+| `cep_pattern_absent_after` | `absent ... after`: started by `still`, cleared by `moving`, again from a second `still`; not at the start; over a restart |
 | `cep_pattern_all` | two events in either order within 2 s |
 | `cep_pattern_partition` | a pattern on a type matches per entity |
 | `cep_pattern_left_out` | patterns that are not right, each with the reason |
