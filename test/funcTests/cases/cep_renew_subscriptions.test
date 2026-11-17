@@ -77,6 +77,19 @@ echo
 echo
 
 
+echo "03. A day, a year: taken (the hub renews daily); more than a year: refused"
+echo "=========================================================================="
+for v in 86400 31536000 31536001; do
+  if "$CEP_BIN" --broker http://127.0.0.1:1 --port "$((CEP_PORT + 2))" --renew-interval "$v" 2>&1 | grep -q "exceeds its upper limit"; then
+    echo "$v: refused"
+  else
+    echo "$v: taken"
+  fi
+done
+echo
+echo
+
+
 --TEARDOWN--
 for n in 1 2; do
   [ -f "$CEP_TEST_DIR/cep$n.pid" ] && kill "$(cat "$CEP_TEST_DIR/cep$n.pid")" 2> /dev/null
@@ -103,5 +116,12 @@ PATCH /entities/urn:ngsi-ld:WallSwitch:hall/attrs: 204
 renewing: 1 fired
 never:    0 fired
 renewals refused: 0
+
+
+03. A day, a year: taken (the hub renews daily); more than a year: refused
+==========================================================================
+86400: taken
+31536000: taken
+31536001: refused
 
 
