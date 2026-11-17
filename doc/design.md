@@ -195,7 +195,10 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
   it - that certificate and no other, instead of the CA store and the host name.
 - A rule acts with corCep's rights, but only where its author may act: corCep checks the author's rights on each
   target - when the rule is saved and again when it fires (a group's members change). A target the author may not
-  write is not written; the rule's `lastError` says so. Who may write a Rule entity at all is the broker's normal
+  write is not written; the rule's `lastError` says so. Built (README "The author's rights"): the author is a
+  signature the editor puts on the rule (a JWS over its when and then, `--author-jwks` / `--author-issuer`), the
+  check the policy decision point (`--pdp`, OPA's API, the request as the PEP would hand it over, that signature
+  as the bearer token) - decided 2026-11-17. Who may write a Rule entity at all is the broker's normal
   access control - a Rule is an entity like any other (section 8, decision 6). Works against any broker.
 - Notifications come to a path holding a secret made at start; loopback, or TLS.
 - `http` actions: to an allow-list of hosts only.
@@ -220,8 +223,8 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 
 | | |
 |---|---|
-| built | events, `where`; any / seq / all / repeat / absent / window; cron / at; `supersedes`; `if` (all / any); set / toggle / step ... until on one entity or a group; Rule statistics; broker auth (`--token-command`, `--broker-cert`); subscriptions renewed; `/dry-run` (the caller's token against `--jwks`; a pure replay - `where`, `if` and groups against the request's entities, corNgsild's q matcher); `--state` (matches, deadlines, windows and steps over a restart); the actions on a thread of their own, a queue per target, retried for `--retry-for` with back-off, then dropped and counted (`droppedActions`); the event queue bounded (`--queue-max`) - full, the oldest dropped; never an error to the broker, whose cooldown would skip the subscription for 30 s; `create` (an id made when none is given) and `delete` (one, an id, a group), on the target's queue; `${...}` in actions (entity, event entity and value, a window's aggregate - checked before a q or an id) |
-| to build | the author's rights checked per target (section 7); `${<event>.entity.<attr>}` |
+| built | events, `where`; any / seq / all / repeat / absent / window; cron / at; `supersedes`; `if` (all / any); set / toggle / step ... until on one entity or a group; Rule statistics; broker auth (`--token-command`, `--broker-cert`); subscriptions renewed; `/dry-run` (the caller's token against `--jwks`; a pure replay - `where`, `if` and groups against the request's entities, corNgsild's q matcher); `--state` (matches, deadlines, windows and steps over a restart); the actions on a thread of their own, a queue per target, retried for `--retry-for` with back-off, then dropped and counted (`droppedActions`); the event queue bounded (`--queue-max`) - full, the oldest dropped; never an error to the broker, whose cooldown would skip the subscription for 30 s; `create` (an id made when none is given) and `delete` (one, an id, a group), on the target's queue; `${...}` in actions (entity, event entity and value, a window's aggregate - checked before a q or an id); the author's rights (`--pdp`: rules signed by the editor, every request asked of the PDP) |
+| to build | `${<event>.entity.<attr>}` |
 | packaging | a version tag and `--version`, a Docker image, the docs, the repo public |
 
 **v1.1** - `cep.so`: the engine as a library, a coraine write-path hook (under its own `COR_FEATURE` flag),

@@ -1194,7 +1194,7 @@ static bool whenExtras(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* w
 // the bad ones left out - each told to leftOut (NULL: logged). <now>: a schedule must fire after it. The
 // generation's strings are its own; arrayP may go after.
 //
-CepRules* rulesParse(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ctx)
+static CepRules* rulesParseX(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ctx, bool signedOnly)
 {
   CepRules* rP = calloc(1, sizeof(CepRules));
   if (rP == NULL)
@@ -1241,6 +1241,12 @@ CepRules* rulesParse(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ct
     memset(ruleP, 0, sizeof(CepRule));
     ruleP->id   = corAllocStrdup(&rP->alloc, id);
     ruleP->name = corAllocStrdup(&rP->alloc, (str(eP, "name") != NULL) ? str(eP, "name") : id);
+
+    //
+    // --pdp: the author's signature first (author.c) - a rule changed without its editor does not run
+    //
+    if (signedOnly && (authorVerify(&rP->alloc, str(eP, "author"), json(eP, "when"), json(eP, "then"), &ruleP->author, why, sizeof(why)) == false))
+      goto bad;
 
     if (whenParse(&rP->alloc, json(eP, "when"), ruleP, why, sizeof(why)) == false)
       goto bad;
@@ -1317,6 +1323,17 @@ CepRules* rulesParse(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ct
 
 // -----------------------------------------------------------------------------
 //
+// rulesParse - the rules of Rule entities, unsigned ones too (/dry-run: drafts)
+//
+CepRules* rulesParse(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ctx)
+{
+  return rulesParseX(arrayP, now, leftOut, ctx, false);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // rulesLoad - every Rule entity (enabled ones), NULL: the broker did not answer
 //
 CepRules* rulesLoad(void)
@@ -1350,7 +1367,7 @@ CepRules* rulesLoad(void)
     return NULL;
   }
 
-  CepRules* rP = rulesParse(resp.body, time(NULL), NULL, NULL);
+  CepRules* rP = rulesParseX(resp.body, time(NULL), NULL, NULL, authorOn());
   corAllocBufferReset(&alloc, false);
 
   if (rP != NULL)

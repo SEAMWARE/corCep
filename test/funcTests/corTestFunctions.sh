@@ -318,3 +318,20 @@ flakyBrokerStart() {
   echo "flakyBrokerStart: no answer on port $1" >&2
   return 1
 }
+
+#
+# pdpStart <port> <policy file> <log file> - the stand-in policy decision point (tools/ftPdp.py), its pid in
+# $CEP_TEST_DIR/pdp.pid (cepPidStop it); waits till it answers
+#
+pdpStart() {
+  python3 -I "$(dirname "${BASH_SOURCE[0]}")/tools/ftPdp.py" "$1" "$2" "$3" &
+  echo $! > "$CEP_TEST_DIR/pdp.pid"
+
+  local i
+  for ((i = 0; i < 50; i++)); do
+    curl -s -o /dev/null "http://127.0.0.1:$1/" && return 0
+    sleep 0.1
+  done
+  echo "pdpStart: no answer on port $1" >&2
+  return 1
+}
