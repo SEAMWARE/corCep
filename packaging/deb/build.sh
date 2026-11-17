@@ -68,7 +68,7 @@ License: Apache-2.0
  /usr/share/common-licenses/Apache-2.0.
 COPYRIGHT
 printf 'corcep (%s) unstable; urgency=medium\n\n  * corCep %s - the changes: https://github.com/SEAMWARE/corCep/commits/main\n\n -- %s  %s\n' \
-       "$full" "$version" "$maintainer" "$(date -R)" | gzip -9n > "$root/usr/share/doc/corcep/changelog.Debian.gz"
+       "$full" "$version" "$maintainer" "$(date -R)" | gzip -9n > "$root/usr/share/doc/corcep/changelog.gz"   # native: no Debian revision
 install -D -m 644 "$src/README.md"                "$root/usr/share/doc/corcep/README.md"
 strip --strip-unneeded "$root/usr/bin/corCep"
 
