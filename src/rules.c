@@ -17,6 +17,7 @@
 #include "corAlloc/corAllocStrdup.h"             // corAllocStrdup
 #include "corJson/CorJson.h"                     // CorJson
 #include "corJson/corJsonCreate.h"               // corJsonCreate
+#include "corJson/corJsonParse.h"                // corJsonParse
 #include "corJson/corJsonRender.h"               // corJsonRender
 #include "corJson/corJsonRenderSize.h"           // corJsonRenderSize
 #include "corTree/corTreeBuilder.h"              // corTreeArray
@@ -152,7 +153,7 @@ static bool eventParse(CorAlloc* allocP, CorNode* evNodeP, CepEvent* evP, const 
 // durationParse - an ISO 8601 duration, as NGSI-LD's own: P[nD][T[nH][nM][n[.n]S]] -> milliseconds; false: not one,
 // or zero
 //
-static bool durationParse(const char* s, long long* msP)
+bool durationParse(const char* s, long long* msP)
 {
   double ms     = 0;
   bool   inTime = false;
@@ -1091,9 +1092,11 @@ static bool whenExtras(CorAlloc* allocP, CorNode* whenP, CepRule* ruleP, char* w
 
 // -----------------------------------------------------------------------------
 //
-// rulesLoad - every Rule entity (enabled ones), NULL: the broker did not answer
+// rulesParse - Rule entities (keyValues, as the broker gives them) into a generation; the disabled ones skipped,
+// the bad ones left out - each told to leftOut (NULL: logged). <now>: a schedule must fire after it. The
+// generation's strings are its own; arrayP may go after.
 //
-CepRules* rulesLoad(void)
+CepRules* rulesParse(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ctx)
 {
   CepRules* rP = calloc(1, sizeof(CepRules));
   if (rP == NULL)
@@ -1101,36 +1104,25 @@ CepRules* rulesLoad(void)
 
   corAllocBufferInit(&rP->alloc, NULL, 0, 256 * 1024, NULL, "corCep rules");
 
-  CepResponse resp;
-  bool got = brokerRequest(&rP->alloc, CorVerbGet, "/entities", "type=Rule&options=keyValues&limit=1000", NULL, &resp);
+  //
+  // A copy in the generation's own allocator: the rules point into it (names, q, set values)
+  //
+  CorJson  cj;
+  corJsonCreate(&cj, &rP->alloc);
+  char*    text = corAlloc(&rP->alloc, corJsonRenderSize(&cj, arrayP) + 1);
+  corJsonRender(&cj, arrayP, text);
+  CorNode* bodyP = corJsonParse(&cj, text);
 
-  if (got && nonexistentTenant(&resp))
+  if ((bodyP == NULL) || (bodyP->type != CorArray))
   {
-    //
-    // A tenant with nothing in it yet: no rules. corCep's own Rule subscription makes the tenant (a POST
-    // /subscriptions creates it), but a broker may not - zero rules either way, and the first Rule made is notified.
-    //
-    resp.status = 200;
-    resp.body   = corTreeArray(&rP->alloc, NULL);
-  }
-  else if ((got == false) || (resp.status != 200))
-  {
-    logLine("the rules: GET /entities?type=Rule - %s", (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
     rulesFree(rP);
     return NULL;
   }
 
-  if ((resp.body == NULL) || (resp.body->type != CorArray))
-  {
-    logLine("the rules: the broker's answer is not an array");
-    rulesFree(rP);
-    return NULL;
-  }
-
-  int n = count(resp.body);
+  int n = count(bodyP);
   rP->ruleV  = (CepRule*)  corAlloc(&rP->alloc, (n + 1) * sizeof(CepRule));
 
-  for (CorNode* eP = resp.body->value.head; eP != NULL; eP = eP->next)
+  for (CorNode* eP = bodyP->value.head; eP != NULL; eP = eP->next)
   {
     char     why[256] = { 0 };
     CepRule* ruleP    = &rP->ruleV[rP->rules];
@@ -1139,7 +1131,11 @@ CepRules* rulesLoad(void)
     CorNode* thenP    = json(eP, "then");
 
     if (id == NULL)
+    {
+      if (leftOut != NULL)
+        leftOut(NULL, "a rule without an 'id'", ctx);
       continue;
+    }
 
     if ((enabledP != NULL) && (enabledP->type == CorBoolean) && (enabledP->value.b == false))
       continue;
@@ -1160,7 +1156,7 @@ CepRules* rulesLoad(void)
     if ((ruleP->kind == CepPatternAt) && (ruleP->atKind != CepAtClock) && (locationParse(&rP->alloc, eP, ruleP, why, sizeof(why)) == false))
       goto bad;
 
-    if (((ruleP->kind == CepPatternCron) || (ruleP->kind == CepPatternAt)) && (scheduleNext(ruleP, time(NULL)) == 0))
+    if (((ruleP->kind == CepPatternCron) || (ruleP->kind == CepPatternAt)) && (scheduleNext(ruleP, now) == 0))
     {
       snprintf(why, sizeof(why), "the schedule never fires (within 5 years for 'cron', a year for 'at')");
       goto bad;
@@ -1193,10 +1189,57 @@ CepRules* rulesLoad(void)
     continue;
 
   bad:
-    logLine("rule %s left out: %s", id, why);
+    if (leftOut != NULL)
+      leftOut(id, why, ctx);
+    else
+      logLine("rule %s left out: %s", id, why);
   }
 
-  logLine("%d rule%s, %d subscription%s", rP->rules, (rP->rules == 1) ? "" : "s", rP->watches, (rP->watches == 1) ? "" : "s");
+  return rP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// rulesLoad - every Rule entity (enabled ones), NULL: the broker did not answer
+//
+CepRules* rulesLoad(void)
+{
+  CorAlloc alloc;
+  corAllocBufferInit(&alloc, NULL, 0, 256 * 1024, NULL, "corCep rules read");
+
+  CepResponse resp;
+  bool got = brokerRequest(&alloc, CorVerbGet, "/entities", "type=Rule&options=keyValues&limit=1000", NULL, &resp);
+
+  if (got && nonexistentTenant(&resp))
+  {
+    //
+    // A tenant with nothing in it yet: no rules. corCep's own Rule subscription makes the tenant (a POST
+    // /subscriptions creates it), but a broker may not - zero rules either way, and the first Rule made is notified.
+    //
+    resp.status = 200;
+    resp.body   = corTreeArray(&alloc, NULL);
+  }
+  else if ((got == false) || (resp.status != 200))
+  {
+    logLine("the rules: GET /entities?type=Rule - %s", (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
+    corAllocBufferReset(&alloc, false);
+    return NULL;
+  }
+
+  if ((resp.body == NULL) || (resp.body->type != CorArray))
+  {
+    logLine("the rules: the broker's answer is not an array");
+    corAllocBufferReset(&alloc, false);
+    return NULL;
+  }
+
+  CepRules* rP = rulesParse(resp.body, time(NULL), NULL, NULL);
+  corAllocBufferReset(&alloc, false);
+
+  if (rP != NULL)
+    logLine("%d rule%s, %d subscription%s", rP->rules, (rP->rules == 1) ? "" : "s", rP->watches, (rP->watches == 1) ? "" : "s");
   return rP;
 }
 

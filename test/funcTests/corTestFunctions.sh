@@ -69,6 +69,7 @@ ngsild() {
 # reading when a test fails.
 #
 cepStart() {
+  rm -f "$CEP_TEST_DIR/corCep.log"               # not the last corCep's: its "rules" line is not this one's
   "$CEP_BIN" --broker "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" \
              > "$CEP_TEST_DIR/corCep.log" 2>&1 &
   echo $! > "$CEP_TEST_DIR/corCep.pid"
@@ -261,4 +262,34 @@ attrSet() {
   curl -s -o /dev/null -X PATCH -H "NGSILD-Tenant: $(cepTenant)" -H "Content-Type: application/json" \
        -d "{\"$2\": {\"type\": \"Property\", \"value\": $3}}" \
        "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$1/attrs"
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# /dry-run - the rule editors' tokens and the replay (src/dryrun.c)
+#
+#   dryRunKeys                  an ES256 key (k1) and its JWK Set in $CEP_TEST_DIR (--jwks $CEP_TEST_DIR/jwks.json)
+#   dryRunToken [ftJwt sign options...]   a token signed with k1, iss http://editor.test, for 300 s
+#   dryRunPost <token> <body>   POST /dry-run: the status, then the body - JSON, members sorted, indented
+#
+dryRunKeys() {
+  python3 -I "$(dirname "${BASH_SOURCE[0]}")/tools/ftJwt.py" key --out "$CEP_TEST_DIR" --name k1 --alg ES256
+  python3 -I "$(dirname "${BASH_SOURCE[0]}")/tools/ftJwt.py" jwks --out "$CEP_TEST_DIR/jwks.json" "$CEP_TEST_DIR/k1.jwk"
+}
+
+dryRunToken() {
+  python3 -I "$(dirname "${BASH_SOURCE[0]}")/tools/ftJwt.py" sign --key "$CEP_TEST_DIR/k1.pem" --alg ES256 \
+          --iss http://editor.test --exp 300 "$@"
+}
+
+dryRunPost() {
+  local token="$1" body="$2" out
+  local -a auth=()
+
+  [ -z "$token" ] || auth=(-H "Authorization: Bearer $token")
+  out=$(curl -s -w '\n%{http_code}' -X POST "http://127.0.0.1:$CEP_PORT/dry-run" "${auth[@]}" \
+             -H 'Content-Type: application/json' --data-binary "$body")
+  echo "POST /dry-run: ${out##*$'\n'}"
+  printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, sys; print(json.dumps(json.load(sys.stdin), indent=2, sort_keys=True))'
 }

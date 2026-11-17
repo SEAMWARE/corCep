@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // The notifications - corHttp on a thread of its own. A notification is answered at once (204) and queued
-// for the engine; nothing is decided here. Only POST /notify/<secret>/<which> is taken.
+// for the engine; nothing is decided here. Only POST /notify/<secret>/<which> is taken - and POST /dry-run (dryrun.c).
 //
 #include <pthread.h>                             // pthread_create
 #include <stdio.h>                               // snprintf
@@ -27,6 +27,15 @@ static CorHttpServer server;
 //
 static void requestCb(CorHttpConn* connP)
 {
+#if CEP_WITH_DRY_RUN
+  if ((connP->method.len == 4) && (strncmp(connP->method.s, "POST", 4) == 0) &&
+      (connP->path.len == 8) && (strncmp(connP->path.s, "/dry-run", 8) == 0))
+  {
+    dryRunRequest(connP);
+    return;
+  }
+#endif
+
   char prefix[64];
   int  prefixLen = snprintf(prefix, sizeof(prefix), "/notify/%s/", cep.secret);
 

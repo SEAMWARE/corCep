@@ -1,0 +1,154 @@
+#
+# FILE            cep_dry_run_auth.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# POST /dry-run's door: off without --jwks; corCep not started when the keys cannot be read; the caller's own token
+# (a JWT against --jwks, --issuer, the --editor-role in --roles-claim); requests that are not a replay: 400.
+#
+--NAME--
+/dry-run: off without --jwks, startup refused without keys, the token checked (401 / 403), bad requests 400
+
+--TAGS--
+cep dryrun auth
+
+--INIT--
+cepTestInit
+dryRunKeys > /dev/null
+
+--RUN--
+RULE='{"id": "urn:ngsi-ld:Rule:r", "type": "Rule", "when": {"json": {"entity": "urn:ngsi-ld:S:1", "attribute": "a"}},
+       "then": {"json": [{"set": {"b": 1}, "entity": "urn:ngsi-ld:T:1"}]}}'
+OK="{\"start\": \"2026-11-17T18:00:00Z\", \"for\": \"PT1S\", \"rules\": [$RULE]}"
+code() {  # code <token> <body> - the status only
+  dryRunPost "$1" "$2" | sed -n 1p
+}
+
+
+echo "01. corCep without --jwks - /dry-run is off: 404"
+echo "================================================="
+cepStart
+dryRunPost "" "$OK"
+cepStop
+echo
+echo
+
+
+echo "02. --jwks naming no file - corCep does not start"
+echo "================================================="
+timeout 5 "$CEP_BIN" --broker "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT" --port "$CEP_PORT" --tenant "$(cepTenant)" \
+        --jwks "$CEP_TEST_DIR/none.json" 2>&1 | sed 's|/tmp/[^ ]*none.json|.../none.json|g'
+echo "exit: ${PIPESTATUS[0]}"
+echo
+echo
+
+
+echo "03. --jwks, --issuer http://editor.test - the token"
+echo "==================================================="
+cepStart --jwks "$CEP_TEST_DIR/jwks.json" --issuer http://editor.test
+W='{"realm_access": {"roles": ["ngsild-write"]}}'
+echo "no token:"
+dryRunPost "" "$OK"
+echo "the read role only:"
+dryRunPost "$(dryRunToken --claims '{"realm_access": {"roles": ["ngsild-read"]}}')" "$OK"
+echo "no roles at all:      $(code "$(dryRunToken)" "$OK")"
+echo "a broken signature:   $(code "$(dryRunToken --claims "$W" --badSig)" "$OK")"
+echo "expired 300 s ago:    $(code "$(dryRunToken --claims "$W" --exp -300)" "$OK")"
+echo "another issuer:       $(code "$(dryRunToken --claims "$W" --iss http://other.test)" "$OK")"
+echo "the write role:       $(code "$(dryRunToken --claims "$W")" "$OK")"
+echo "roles as one string:  $(code "$(dryRunToken --claims '{"realm_access": {"roles": "ngsild-read ngsild-write"}}')" "$OK")"
+echo
+echo
+
+
+echo "04. Not a replay - 400, and why"
+echo "==============================="
+T=$(dryRunToken --claims "$W")
+dryRunPost "$T" "not json"
+dryRunPost "$T" '{"rules": []}'
+dryRunPost "$T" "{\"rules\": [$RULE], \"events\": [{\"entity\": \"urn:ngsi-ld:S:1\", \"attribute\": \"a\", \"value\": 1}]}"
+dryRunPost "$T" "{\"rules\": [$RULE], \"start\": \"yesterday\"}"
+dryRunPost "$T" "{\"rules\": [$RULE], \"for\": \"P32D\"}"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. corCep without --jwks - /dry-run is off: 404
+=================================================
+POST /dry-run: 404
+{
+  "detail": "/dry-run is off - corCep runs without --jwks",
+  "status": 404,
+  "title": "Not Found"
+}
+
+
+02. --jwks naming no file - corCep does not start
+=================================================
+corCep: --jwks .../none.json: cannot open '.../none.json'
+exit: 1
+
+
+03. --jwks, --issuer http://editor.test - the token
+===================================================
+no token:
+POST /dry-run: 401
+{
+  "detail": "no bearer token - Authorization: Bearer <token>",
+  "status": 401,
+  "title": "Unauthorized"
+}
+the read role only:
+POST /dry-run: 403
+{
+  "detail": "the token has no role 'ngsild-write' (in 'realm_access.roles')",
+  "status": 403,
+  "title": "Forbidden"
+}
+no roles at all:      POST /dry-run: 403
+a broken signature:   POST /dry-run: 401
+expired 300 s ago:    POST /dry-run: 401
+another issuer:       POST /dry-run: 401
+the write role:       POST /dry-run: 200
+roles as one string:  POST /dry-run: 200
+
+
+04. Not a replay - 400, and why
+===============================
+POST /dry-run: 400
+{
+  "detail": "the body: a JSON object - { \"rules\": [...], \"events\": [...] }",
+  "status": 400,
+  "title": "Bad Request"
+}
+POST /dry-run: 400
+{
+  "detail": "'rules': a list of Rule entities (keyValues), one at least",
+  "status": 400,
+  "title": "Bad Request"
+}
+POST /dry-run: 400
+{
+  "detail": "'events' [0]: 'at' - ms from the start, or an ISO 8601 duration (PT0.5S)",
+  "status": 400,
+  "title": "Bad Request"
+}
+POST /dry-run: 400
+{
+  "detail": "'start': an ISO 8601 date-time after 1970 (2026-11-17T18:00:00Z)",
+  "status": 400,
+  "title": "Bad Request"
+}
+POST /dry-run: 400
+{
+  "detail": "the replay lasts 31 days at most ('for', or the last event + 1 hour)",
+  "status": 400,
+  "title": "Bad Request"
+}
+
+

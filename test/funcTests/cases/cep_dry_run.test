@@ -1,0 +1,344 @@
+#
+# FILE            cep_dry_run.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# POST /dry-run (src/dryrun.c): rules replayed against made-up events on a clock of their own - nothing asked of
+# the broker, nothing written. 'where', 'if' and a group target's q against the request's entities.
+#
+--NAME--
+/dry-run: a replay - supersedes and 'within' on the replay's clock, 'where', 'if', groups, absent, window, cron
+
+--TAGS--
+cep dryrun
+
+--INIT--
+cepTestInit
+dryRunKeys > /dev/null
+
+--RUN--
+echo "01. corCep with --jwks - /dry-run on"
+echo "====================================="
+cepStart --jwks "$CEP_TEST_DIR/jwks.json" --issuer http://editor.test
+cepAwaitLog "/dry-run on" | sed 's|from /.*/jwks.json|from .../jwks.json|'
+TOKEN=$(dryRunToken --claims '{"realm_access": {"roles": ["ngsild-write"]}}')
+echo
+echo
+
+
+SINGLE='{"id": "urn:ngsi-ld:Rule:single", "type": "Rule",
+         "when": {"json": {"events": [{"event": "press", "type": "WallSwitch", "attribute": "press", "where": "press==\"upper\""}], "pattern": "press"}},
+         "then": {"json": [{"set": {"on": true}, "type": "Light", "q": "room==\"kitchen\""}]}}'
+DOUBLE='{"id": "urn:ngsi-ld:Rule:double", "type": "Rule",
+         "when": {"json": {"events": [{"event": "press", "type": "WallSwitch", "attribute": "press", "where": "press==\"upper\""}],
+                           "pattern": {"seq": ["press", "press"], "within": "PT0.5S"}, "supersedes": ["urn:ngsi-ld:Rule:single"],
+                           "if": [{"type": "Home", "q": "mode==\"day\""}]}},
+         "then": {"json": [{"set": {"on": false}, "type": "Light"}]}}'
+PRESSES='[{"at": 0,      "entity": "urn:ngsi-ld:WallSwitch:s1", "type": "WallSwitch", "attribute": "press", "value": "upper"},
+          {"at": "PT3S", "entity": "urn:ngsi-ld:WallSwitch:s1", "type": "WallSwitch", "attribute": "press", "value": "upper"},
+          {"at": 3300,   "entity": "urn:ngsi-ld:WallSwitch:s1", "type": "WallSwitch", "attribute": "press", "value": "upper"},
+          {"at": 6000,   "entity": "urn:ngsi-ld:WallSwitch:s1", "type": "WallSwitch", "attribute": "press", "value": "lower"}]'
+LIGHTS='{"id": "urn:ngsi-ld:Light:k1", "type": "Light", "room": "kitchen", "on": false},
+        {"id": "urn:ngsi-ld:Light:b1", "type": "Light", "room": {"type": "Property", "value": "bedroom"}, "on": true}'
+
+
+echo "02. A single press, a double press, a 'lower' press - the home in night mode"
+echo "============================================================================"
+echo "    single: 0.5 s late (double's 'within'), the kitchen light only; double: its 'if' does not hold;"
+echo "    the lower press: not an event ('where')"
+dryRunPost "$TOKEN" "{\"start\": \"2026-11-17T18:00:00Z\", \"for\": \"PT10S\", \"rules\": [$SINGLE, $DOUBLE],
+                      \"entities\": [$LIGHTS, {\"id\": \"urn:ngsi-ld:Home:h\", \"type\": \"Home\", \"mode\": \"night\"}],
+                      \"events\": $PRESSES}"
+echo
+echo
+
+
+echo "03. The same in day mode - double fires: every light (a group, no q)"
+echo "===================================================================="
+dryRunPost "$TOKEN" "{\"start\": \"2026-11-17T18:00:00Z\", \"for\": \"PT10S\", \"rules\": [$SINGLE, $DOUBLE],
+                      \"entities\": [$LIGHTS, {\"id\": \"urn:ngsi-ld:Home:h\", \"type\": \"Home\", \"mode\": \"day\"}],
+                      \"events\": $PRESSES}"
+echo
+echo
+
+
+echo "04. absent (no motion for 10 min) and a window (avg over 1 h above 26) - on the replay's clock"
+echo "=============================================================================================="
+ABSENT='{"id": "urn:ngsi-ld:Rule:absent", "type": "Rule",
+         "when": {"json": {"events": [{"event": "m", "entity": "urn:ngsi-ld:Motion:c2", "attribute": "motion"}], "pattern": {"absent": "m", "for": "PT10M"}}},
+         "then": {"json": [{"set": {"on": false}, "entity": "urn:ngsi-ld:Light:c2"}]}}'
+WINDOW='{"id": "urn:ngsi-ld:Rule:hot", "type": "Rule",
+         "when": {"json": {"events": [{"event": "t", "entity": "urn:ngsi-ld:Room:r1", "attribute": "temperature"}],
+                           "pattern": {"window": "t", "for": "PT1H", "avg": {"gt": 26}}}},
+         "then": {"json": [{"set": {"on": true}, "entity": "urn:ngsi-ld:Fan:r1"}]}}'
+dryRunPost "$TOKEN" "{\"start\": \"2026-11-17T18:00:00Z\", \"for\": \"PT2H\", \"rules\": [$ABSENT, $WINDOW],
+                      \"events\": [{\"at\": \"PT1M\",  \"entity\": \"urn:ngsi-ld:Motion:c2\", \"attribute\": \"motion\", \"value\": true},
+                                   {\"at\": \"PT5M\",  \"entity\": \"urn:ngsi-ld:Motion:c2\", \"attribute\": \"motion\", \"value\": true},
+                                   {\"at\": \"PT10M\", \"entity\": \"urn:ngsi-ld:Room:r1\", \"type\": \"Room\", \"attribute\": \"temperature\", \"value\": 25},
+                                   {\"at\": \"PT20M\", \"entity\": \"urn:ngsi-ld:Room:r1\", \"type\": \"Room\", \"attribute\": \"temperature\", \"value\": 28.5}]}"
+echo
+echo
+
+
+echo "05. A cron schedule - every 10 minutes, for 30 minutes: three fires (no events at all)"
+echo "====================================================================================="
+CRON='{"id": "urn:ngsi-ld:Rule:tick", "type": "Rule", "when": {"json": {"pattern": {"cron": "*/10 * * * *"}}},
+       "then": {"json": [{"toggle": "on", "entity": "urn:ngsi-ld:Light:porch"}]}}'
+dryRunPost "$TOKEN" "{\"start\": \"2026-11-17T18:00:00Z\", \"for\": \"PT30M\", \"rules\": [$CRON]}"
+echo
+echo
+
+
+echo "06. A rule left out (no 'then') - said in 'leftOut', the others replayed; nothing written in the broker"
+echo "======================================================================================================="
+dryRunPost "$TOKEN" "{\"start\": \"2026-11-17T18:00:00Z\", \"for\": \"PT1S\", \"rules\": [$SINGLE,
+                      {\"id\": \"urn:ngsi-ld:Rule:broken\", \"type\": \"Rule\", \"when\": {\"json\": {\"entity\": \"urn:ngsi-ld:X:1\", \"attribute\": \"a\"}}}],
+                      \"events\": [{\"at\": 0, \"entity\": \"urn:ngsi-ld:WallSwitch:s1\", \"type\": \"WallSwitch\", \"attribute\": \"press\", \"value\": \"upper\"}]}"
+echo "the broker: $(curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities?type=Rule,Light")"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+--EXPECT--
+01. corCep with --jwks - /dry-run on
+=====================================
+/dry-run on: 1 key from .../jwks.json, role 'ngsild-write' in 'realm_access.roles'
+
+
+02. A single press, a double press, a 'lower' press - the home in night mode
+============================================================================
+    single: 0.5 s late (double's 'within'), the kitchen light only; double: its 'if' does not hold;
+    the lower press: not an event ('where')
+POST /dry-run: 200
+{
+  "end": 10000,
+  "fires": [
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:k1"
+          ],
+          "q": "room==\"kitchen\"",
+          "set": {
+            "on": true
+          },
+          "type": "Light"
+        }
+      ],
+      "at": 500,
+      "entity": "urn:ngsi-ld:WallSwitch:s1",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:single",
+      "time": "2026-11-17T18:00:00.500Z"
+    },
+    {
+      "at": 3300,
+      "entity": "urn:ngsi-ld:WallSwitch:s1",
+      "fired": false,
+      "rule": "urn:ngsi-ld:Rule:double",
+      "time": "2026-11-17T18:00:03.300Z",
+      "why": "'if' mode==\"day\" does not hold"
+    }
+  ],
+  "leftOut": [],
+  "start": "2026-11-17T18:00:00.000Z",
+  "truncated": false
+}
+
+
+03. The same in day mode - double fires: every light (a group, no q)
+====================================================================
+POST /dry-run: 200
+{
+  "end": 10000,
+  "fires": [
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:k1"
+          ],
+          "q": "room==\"kitchen\"",
+          "set": {
+            "on": true
+          },
+          "type": "Light"
+        }
+      ],
+      "at": 500,
+      "entity": "urn:ngsi-ld:WallSwitch:s1",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:single",
+      "time": "2026-11-17T18:00:00.500Z"
+    },
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:k1",
+            "urn:ngsi-ld:Light:b1"
+          ],
+          "set": {
+            "on": false
+          },
+          "type": "Light"
+        }
+      ],
+      "at": 3300,
+      "entity": "urn:ngsi-ld:WallSwitch:s1",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:double",
+      "time": "2026-11-17T18:00:03.300Z"
+    }
+  ],
+  "leftOut": [],
+  "start": "2026-11-17T18:00:00.000Z",
+  "truncated": false
+}
+
+
+04. absent (no motion for 10 min) and a window (avg over 1 h above 26) - on the replay's clock
+==============================================================================================
+POST /dry-run: 200
+{
+  "end": 7200000,
+  "fires": [
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:c2"
+          ],
+          "set": {
+            "on": false
+          }
+        }
+      ],
+      "at": 900000,
+      "entity": "urn:ngsi-ld:Motion:c2",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:absent",
+      "time": "2026-11-17T18:15:00.000Z"
+    },
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Fan:r1"
+          ],
+          "set": {
+            "on": true
+          }
+        }
+      ],
+      "at": 1200000,
+      "entity": "urn:ngsi-ld:Room:r1",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:hot",
+      "time": "2026-11-17T18:20:00.000Z"
+    }
+  ],
+  "leftOut": [],
+  "start": "2026-11-17T18:00:00.000Z",
+  "truncated": false
+}
+
+
+05. A cron schedule - every 10 minutes, for 30 minutes: three fires (no events at all)
+=====================================================================================
+POST /dry-run: 200
+{
+  "end": 1800000,
+  "fires": [
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:porch"
+          ],
+          "toggle": "on"
+        }
+      ],
+      "at": 600000,
+      "entity": null,
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:tick",
+      "time": "2026-11-17T18:10:00.000Z"
+    },
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:porch"
+          ],
+          "toggle": "on"
+        }
+      ],
+      "at": 1200000,
+      "entity": null,
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:tick",
+      "time": "2026-11-17T18:20:00.000Z"
+    },
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:porch"
+          ],
+          "toggle": "on"
+        }
+      ],
+      "at": 1800000,
+      "entity": null,
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:tick",
+      "time": "2026-11-17T18:30:00.000Z"
+    }
+  ],
+  "leftOut": [],
+  "start": "2026-11-17T18:00:00.000Z",
+  "truncated": false
+}
+
+
+06. A rule left out (no 'then') - said in 'leftOut', the others replayed; nothing written in the broker
+=======================================================================================================
+POST /dry-run: 200
+{
+  "end": 1000,
+  "fires": [
+    {
+      "actions": [
+        {
+          "entities": [],
+          "q": "room==\"kitchen\"",
+          "set": {
+            "on": true
+          },
+          "type": "Light"
+        }
+      ],
+      "at": 0,
+      "entity": "urn:ngsi-ld:WallSwitch:s1",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:single",
+      "time": "2026-11-17T18:00:00.000Z"
+    }
+  ],
+  "leftOut": [
+    {
+      "rule": "urn:ngsi-ld:Rule:broken",
+      "why": "'then' - a list of actions"
+    }
+  ],
+  "start": "2026-11-17T18:00:00.000Z",
+  "truncated": false
+}
+the broker: []
+
+

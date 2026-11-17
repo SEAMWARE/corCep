@@ -214,7 +214,11 @@ typedef struct CepRules                          // a generation of rules - repl
   int        watchMax;
 } CepRules;
 
-extern CepRules* rulesLoad(void);
+typedef void (*CepLeftOutFn)(const char* id, const char* why, void* ctx);   // a rule left out, and why (id NULL: none)
+
+extern CepRules* rulesLoad(void);                                                            // from the broker
+extern CepRules* rulesParse(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ctx);   // from Rule entities (keyValues)
+extern bool      durationParse(const char* s, long long* msP);                               // an ISO 8601 duration (PT0.5S, P1D) in ms; false: not one, or zero
 extern void      rulesFree(CepRules* rulesP);
 
 
@@ -239,6 +243,7 @@ typedef void (*CepFireFn)(CepRule* ruleP, const char* entity, void* ctx);
 
 typedef struct CepPatterns CepPatterns;          // the state of one set of rules - the engine's, or a dry run's
 
+extern void         condText(CepCondition* cP, char* buf, int bufLen);        // a condition in words: a leaf its q, a group all(a; b) / any(a | b)
 extern long long    nowMs(void);                                               // CLOCK_MONOTONIC, ms
 extern CepPatterns* patternsNew(long long wallAtZeroMs);                       // 0: the host's wall clock; else a dry run's, at 'now' 0
 extern void         patternsFree(CepPatterns* psP);
@@ -247,6 +252,13 @@ extern void         patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch,
 extern long long    patternsTimers(CepPatterns* psP, CepRules* rulesP, long long now, CepFireFn fire, void* ctx);   // the expired ones run; the next deadline, 0: none
 extern long long    patternsDropped(CepPatterns* psP, const char* ruleId);     // partial matches dropped (the bound), since start
 extern long long    patternsDroppedValues(CepPatterns* psP, const char* ruleId);   // window values dropped (the bound), since start
+
+//
+// /dry-run (dryrun.c) - rules replayed against made-up events; built with DRY_RUN=1 (the default)
+//
+struct CorHttpConn;
+extern bool dryRunInit(const char* jwks, const char* issuer, const char* audience, const char* rolesClaim, const char* editorRole, int refreshS, char* why, int whyLen);
+extern void dryRunRequest(struct CorHttpConn* connP);
 
 //
 // The schedules (schedule.c)
