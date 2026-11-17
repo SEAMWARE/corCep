@@ -30,6 +30,7 @@ make install          # /usr/local/bin/corCep (PREFIX=..., DESTDIR=...)
 ```
 corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant T]
        [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval 10]
+       [--renew-interval 3600]
 ```
 
 | Option | |
@@ -42,6 +43,7 @@ corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant
 | `--token-command`, `-tc` | a command (`sh -c`) whose first line of output is the bearer token - run at start, again before the token expires, and when the broker answers 401. See [A broker that takes short-lived tokens](#a-broker-that-takes-short-lived-tokens) |
 | `--broker-cert`, `-bc` | the broker's own certificate (PEM), trusted as it is - for a broker whose certificate no CA signed and whose name is not the one in `--broker`. See [A broker with a certificate of its own](#a-broker-with-a-certificate-of-its-own) |
 | `--stats-interval`, `-si` | seconds between two writes of a rule's statistics to its Rule entity (default 10; 0: at once) - see [Statistics](#statistics) |
+| `--renew-interval`, `-ri` | seconds between two renewals of corCep's subscriptions (default 3600; 0: never) - a broker that keeps a subscription's owner only for a while (coraine `--auth oidc`: `--oidcOwnerMaxAge`, 24 h) stops notifying once it runs out, without a word |
 
 The options can also come from the environment: `CORCEP_BROKER`, `CORCEP_PORT`, ...
 

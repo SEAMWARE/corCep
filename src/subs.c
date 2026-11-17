@@ -182,6 +182,77 @@ bool subsInit(void)
 
 // -----------------------------------------------------------------------------
 //
+// subRenew - a PATCH that changes nothing, made with corCep's token of now: a broker that keeps a subscription's
+// owner only for a while (coraine --auth oidc: --oidcOwnerMaxAge, 24 h) keeps it again from now. An owner run out
+// is not an error the broker reports - its notifications just stop coming. Returns the status (0: no answer).
+//
+static int subRenew(CorAlloc* allocP, const char* id)
+{
+  char        path[512];
+  CorNode*    bodyP = corTreeObject(allocP, NULL);
+  CepResponse resp;
+
+  corTreeChildAdd(bodyP, corTreeBoolean(allocP, "isActive", true));
+  snprintf(path, sizeof(path), "/subscriptions/%s", urlEncode(allocP, id));
+
+  if (brokerRequest(allocP, CorVerbPatch, path, NULL, bodyP, &resp) == false)
+  {
+    logLine("renewing subscription %s: %s", id, resp.error);
+    return 0;
+  }
+
+  if ((resp.status != 204) && (resp.status != 404))
+    logLine("renewing subscription %s: %d %s", id, resp.status, (resp.text != NULL) ? resp.text : "no body");
+
+  return resp.status;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// subsRenew - every subscription of corCep renewed (--renew-interval). One the broker no longer has is made again:
+// the Rule subscription here, an event one by the rules read again - true: read them.
+//
+bool subsRenew(void)
+{
+  CorAlloc alloc;
+  bool     reload = false;
+  int      kept   = 0;
+
+  corAllocBufferInit(&alloc, NULL, 0, 64 * 1024, NULL, "corCep subsRenew");
+
+  if (subRenew(&alloc, CEP_SUB_RULES) == 404)
+  {
+    logLine("subscription %s gone - made again", CEP_SUB_RULES);
+    subCreate(&alloc, CEP_SUB_RULES, NULL, "Rule", NULL, NULL, "rules");
+    reload = true;                               // a rule changed while it was gone: read now
+  }
+
+  for (int ix = 0; ix < subN; ix++)
+  {
+    char id[128];
+
+    snprintf(id, sizeof(id), "%s%d", CEP_SUB_PREFIX, subV[ix].no);
+    if (subRenew(&alloc, id) == 404)
+    {
+      logLine("subscription %s gone - made again", id);
+      free(subV[ix].key);                        // forgotten: subsApply gives the watch a new one
+      reload = true;
+      continue;
+    }
+    subV[kept++] = subV[ix];
+  }
+  subN = kept;
+
+  corAllocBufferReset(&alloc, false);
+  return reload;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // watchKey -
 //
 static void watchKey(CepWatch* wP, char* key, int keyLen)

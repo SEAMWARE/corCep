@@ -26,6 +26,8 @@
 #                     0.7.0 has no --https; a release once one has it
 #   CEP_AUTH_PORT     default 4063
 #
+# Its subscriptions' owners hold 20 s (--oidcOwnerMaxAge; a hub: 24 h) - cep_renew_subscriptions.test sees one run out.
+#
 IMAGE="${CEP_BROKER_IMAGE:-quay.io/seamware/coraine:0.7.0}"
 PORT="${CEP_BROKER_PORT:-4062}"
 NAME="corcep-functest-broker-$PORT"
@@ -83,7 +85,7 @@ authUp() {
   docker rm -f "$AUTH_NAME" > /dev/null 2>&1
   docker run -d --rm --name "$AUTH_NAME" --network host -v "$AUTH_DIR:/hub:ro" "$AUTH_IMAGE" \
          --database ramDB --troe none --port "$AUTH_PORT" --https --key /hub/tls-key.pem --cert /hub/cert.pem \
-         --auth oidc --oidcIssuer cep-test --oidcJwks /hub/jwks.json --oidcAnyTenant > /dev/null || return 1
+         --auth oidc --oidcIssuer cep-test --oidcJwks /hub/jwks.json --oidcAnyTenant --oidcOwnerMaxAge 20 > /dev/null || return 1
   for ((i = 0; i < 150; i++)); do
     [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$AUTH_PORT/ngsi-ld/v1/types")" = 401 ] && { echo "broker: $AUTH_IMAGE on port $AUTH_PORT (https, oidc - $AUTH_DIR)"; return 0; }
     sleep 0.1

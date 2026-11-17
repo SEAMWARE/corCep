@@ -224,8 +224,10 @@ extern void      rulesFree(CepRules* rulesP);
 // Subscriptions, the listener, the engine
 //
 extern int  statsInterval;                                    // seconds between two writes of a rule's statistics
+extern int  renewInterval;                                    // seconds between two renewals of the subscriptions (0: never)
 extern bool subsInit(void);                                   // stale ones removed, the Rule subscription made
 extern bool subsApply(CepRules* rulesP);                      // one per watch, the old ones replaced
+extern bool subsRenew(void);                                  // all renewed (their owner); true: one was gone - read the rules again
 extern bool listenerStart(void);                              // the notification server, its own thread
 extern void engineRun(void);                                  // the events, one at a time - never returns
 extern void engineQueue(const char* which, const char* body, int bodyLen);   // from the listener thread
