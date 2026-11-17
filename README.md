@@ -779,6 +779,28 @@ event fires on every one, and corCep feeds every rule of an event, the patterns 
 CI (`.github/workflows/ci.yml`) builds corCep against the cor libs' main and runs the functional tests on every
 pull request.
 
+
+### Coverage
+
+```
+test/funcTests/broker.sh up
+make coverage           # coverage/index.html, line by line; a summary per file on the terminal
+```
+
+corCep built with `--coverage` into `obj/coverage` (from scratch each time; `./corCep` is left as it is), the
+functional tests run on that binary, then gcovr (>= 8.3; `GCOVR=<path>`). It measures corCep's own `src/` - not the
+cor-libs it links, which stay uninstrumented sibling checkouts. A corCep a test kills with `kill -9` writes no
+counts.
+
+2026-11-17, 42 tests: **86.9 % of the lines** (3208 of 3693), all 192 functions, 71.8 % of the branches. Most of
+what is not run: out of memory, the broker answering an error, start-up option errors. Features no test reaches:
+
+- a target's queue full (100 requests waiting for one entity): the oldest dropped (`sender.c`)
+- `/dry-run` showing a `toggle`, `step`, `create`, `delete` action (`dryrun.c`)
+- a `step` stopped because its rule is gone after a reload (`engine.c`)
+- `--state` of a `repeat` rule's times (`pattern.c`)
+- the rules' `GET` failing at a reload (`rules.c`)
+
 ## License
 
 corCep is licensed under the [Apache License 2.0](LICENSE) - Copyright 2026 Seamware.
