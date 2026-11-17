@@ -237,12 +237,16 @@ extern void engineQueue(const char* which, const char* body, int bodyLen);   // 
 //
 typedef void (*CepFireFn)(CepRule* ruleP, const char* entity, void* ctx);
 
-extern long long nowMs(void);                                                  // CLOCK_MONOTONIC, ms
-extern void      patternsAdopt(CepRules* rulesP, long long now);              // a new generation: the state of unchanged rules kept
-extern void      patternsEvent(CepRules* rulesP, int watch, const char* entity, const double* valueP, long long now, CepFireFn fire, void* ctx);
-extern long long patternsTimers(CepRules* rulesP, long long now, CepFireFn fire, void* ctx);   // the expired ones run; the next deadline, 0: none
-extern long long patternsDropped(const char* ruleId);                         // partial matches dropped (the bound), since start
-extern long long patternsDroppedValues(const char* ruleId);                   // window values dropped (the bound), since start
+typedef struct CepPatterns CepPatterns;          // the state of one set of rules - the engine's, or a dry run's
+
+extern long long    nowMs(void);                                               // CLOCK_MONOTONIC, ms
+extern CepPatterns* patternsNew(long long wallAtZeroMs);                       // 0: the host's wall clock; else a dry run's, at 'now' 0
+extern void         patternsFree(CepPatterns* psP);
+extern void         patternsAdopt(CepPatterns* psP, CepRules* rulesP, long long now);   // a new generation: the state of unchanged rules kept
+extern void         patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch, const char* entity, const double* valueP, long long now, CepFireFn fire, void* ctx);
+extern long long    patternsTimers(CepPatterns* psP, CepRules* rulesP, long long now, CepFireFn fire, void* ctx);   // the expired ones run; the next deadline, 0: none
+extern long long    patternsDropped(CepPatterns* psP, const char* ruleId);     // partial matches dropped (the bound), since start
+extern long long    patternsDroppedValues(CepPatterns* psP, const char* ruleId);   // window values dropped (the bound), since start
 
 //
 // The schedules (schedule.c)

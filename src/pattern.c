@@ -126,9 +126,19 @@ typedef struct State
   bool           seen;
 } State;
 
-static State*   stateList  = NULL;
-static State**  ruleStateV = NULL;               // the generation's rules' states, by rule index
-static int      ruleStates = 0;
+
+
+// -----------------------------------------------------------------------------
+//
+// CepPatterns - the state of one set of rules: the engine's, or a dry run's (its own clock)
+//
+struct CepPatterns
+{
+  State*     stateList;
+  State**    ruleStateV;                         // the generation's rules' states, by rule index
+  int        ruleStates;
+  long long  wallAtZeroMs;                       // 0: the wall clock is the host's; else the wall clock is this + 'now'
+};
 
 
 
@@ -141,6 +151,23 @@ long long nowMs(void)
   struct timespec ts;
 
   clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// wallMs - the wall clock, ms since the epoch: the host's, or a dry run's ('now' from its start)
+//
+static long long wallMs(CepPatterns* psP, long long now)
+{
+  if (psP->wallAtZeroMs != 0)
+    return psP->wallAtZeroMs + now;
+
+  struct timespec ts;
+
+  clock_gettime(CLOCK_REALTIME, &ts);
   return (long long) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
@@ -228,24 +255,24 @@ static void scheduleSet(CepRule* ruleP, Part* pP, time_t after)
 // same, started afresh if not; the state of rules gone dropped. An 'absent' rule on an entity id starts its
 // timer now: no event at all for 'for' is an absence too.
 //
-void patternsAdopt(CepRules* rulesP, long long now)
+void patternsAdopt(CepPatterns* psP, CepRules* rulesP, long long now)
 {
-  for (State* sP = stateList; sP != NULL; sP = sP->next)
+  for (State* sP = psP->stateList; sP != NULL; sP = sP->next)
     sP->seen = false;
 
-  free(ruleStateV);
-  ruleStates = 0;
-  ruleStateV = calloc((rulesP->rules > 0) ? rulesP->rules : 1, sizeof(State*));
-  if (ruleStateV == NULL)
+  free(psP->ruleStateV);
+  psP->ruleStates = 0;
+  psP->ruleStateV = calloc((rulesP->rules > 0) ? rulesP->rules : 1, sizeof(State*));
+  if (psP->ruleStateV == NULL)
     return;
-  ruleStates = rulesP->rules;
+  psP->ruleStates = rulesP->rules;
 
   for (int ix = 0; ix < rulesP->rules; ix++)
   {
     CepRule* ruleP = &rulesP->ruleV[ix];
     State*   sP;
 
-    for (sP = stateList; sP != NULL; sP = sP->next)
+    for (sP = psP->stateList; sP != NULL; sP = sP->next)
     {
       if (strcmp(sP->id, ruleP->id) == 0)
         break;
@@ -260,8 +287,8 @@ void patternsAdopt(CepRules* rulesP, long long now)
         continue;
       sP->id       = strdup(ruleP->id);
       sP->whenText = strdup(ruleP->whenText);
-      sP->next     = stateList;
-      stateList    = sP;
+      sP->next     = psP->stateList;
+      psP->stateList    = sP;
       fresh        = true;
     }
     else if (strcmp(sP->whenText, ruleP->whenText) != 0)
@@ -272,13 +299,13 @@ void patternsAdopt(CepRules* rulesP, long long now)
     }
 
     sP->seen        = true;
-    ruleStateV[ix]  = sP;
+    psP->ruleStateV[ix]  = sP;
 
     if ((ruleP->kind == CepPatternCron) || (ruleP->kind == CepPatternAt))
     {
       Part* pP = partOf(sP, "");
       if ((pP != NULL) && (pP->scheduleAt == 0))
-        scheduleSet(ruleP, pP, time(NULL));
+        scheduleSet(ruleP, pP, (time_t) (wallMs(psP, now) / 1000));
     }
 
     if (fresh && (ruleP->kind == CepPatternAbsent) && (ruleP->partitioned == false))
@@ -292,7 +319,7 @@ void patternsAdopt(CepRules* rulesP, long long now)
     }
   }
 
-  State** prevPP = &stateList;
+  State** prevPP = &psP->stateList;
   while (*prevPP != NULL)
   {
     State* sP = *prevPP;
@@ -307,6 +334,46 @@ void patternsAdopt(CepRules* rulesP, long long now)
     else
       prevPP = &sP->next;
   }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// patternsNew - an empty state; <wallAtZeroMs> 0: the host's wall clock, else the wall clock at 'now' 0 (a dry run)
+//
+CepPatterns* patternsNew(long long wallAtZeroMs)
+{
+  CepPatterns* psP = calloc(1, sizeof(CepPatterns));
+
+  if (psP != NULL)
+    psP->wallAtZeroMs = wallAtZeroMs;
+
+  return psP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// patternsFree -
+//
+void patternsFree(CepPatterns* psP)
+{
+  if (psP == NULL)
+    return;
+
+  while (psP->stateList != NULL)
+  {
+    State* sP      = psP->stateList;
+    psP->stateList = sP->next;
+    partsFree(sP);
+    free(sP->id);
+    free(sP->whenText);
+    free(sP);
+  }
+  free(psP->ruleStateV);
+  free(psP);
 }
 
 
@@ -677,11 +744,11 @@ static long long supersededWithin(CepRules* rulesP, int ix)
 // the rules done fire. The patterns first, so that a match done can cancel what it supersedes before the
 // single-event rules are looked at.
 //
-void patternsEvent(CepRules* rulesP, int watch, const char* entity, const double* valueP, long long now, CepFireFn fire, void* ctx)
+void patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch, const char* entity, const double* valueP, long long now, CepFireFn fire, void* ctx)
 {
   bool* doneV = calloc((rulesP->rules > 0) ? rulesP->rules : 1, sizeof(bool));
 
-  if ((doneV == NULL) || (ruleStates != rulesP->rules))
+  if ((doneV == NULL) || (psP->ruleStates != rulesP->rules))
   {
     free(doneV);
     return;
@@ -693,7 +760,7 @@ void patternsEvent(CepRules* rulesP, int watch, const char* entity, const double
   for (int ix = 0; ix < rulesP->rules; ix++)
   {
     CepRule* ruleP = &rulesP->ruleV[ix];
-    State*   sP    = ruleStateV[ix];
+    State*   sP    = psP->ruleStateV[ix];
     int      ev    = -1;
 
     if ((ruleP->kind == CepPatternAny) || (sP == NULL))
@@ -747,10 +814,10 @@ void patternsEvent(CepRules* rulesP, int watch, const char* entity, const double
     for (int jx = 0; jx < ruleP->supersedes; jx++)
     {
       int bx = ruleIndex(rulesP, ruleP->supersedeV[jx]);
-      if ((bx == -1) || (ruleStateV[bx] == NULL))
+      if ((bx == -1) || (psP->ruleStateV[bx] == NULL))
         continue;
 
-      Part* bP = partOf(ruleStateV[bx], rulesP->ruleV[bx].partitioned ? entity : "");
+      Part* bP = partOf(psP->ruleStateV[bx], rulesP->ruleV[bx].partitioned ? entity : "");
       if (bP != NULL)
         bP->pendingAt = 0;
     }
@@ -778,7 +845,7 @@ void patternsEvent(CepRules* rulesP, int watch, const char* entity, const double
       continue;
 
     long long within = supersededWithin(rulesP, ix);
-    if ((within == 0) || (ruleStateV[ix] == NULL))
+    if ((within == 0) || (psP->ruleStateV[ix] == NULL))
     {
       fire(ruleP, entity, ctx);
       continue;
@@ -801,7 +868,7 @@ void patternsEvent(CepRules* rulesP, int watch, const char* entity, const double
     if (taken)
       continue;
 
-    Part* pP = partOf(ruleStateV[ix], ruleP->partitioned ? entity : "");
+    Part* pP = partOf(psP->ruleStateV[ix], ruleP->partitioned ? entity : "");
     if (pP == NULL)
       continue;
 
@@ -821,17 +888,17 @@ void patternsEvent(CepRules* rulesP, int watch, const char* entity, const double
 //
 // patternsTimers - the deadlines passed: absences fire, waiting fires fire; returns the next deadline, 0: none
 //
-long long patternsTimers(CepRules* rulesP, long long now, CepFireFn fire, void* ctx)
+long long patternsTimers(CepPatterns* psP, CepRules* rulesP, long long now, CepFireFn fire, void* ctx)
 {
   long long next = 0;
 
-  if ((rulesP == NULL) || (ruleStates != rulesP->rules))
+  if ((rulesP == NULL) || (psP->ruleStates != rulesP->rules))
     return 0;
 
   for (int ix = 0; ix < rulesP->rules; ix++)
   {
     CepRule* ruleP = &rulesP->ruleV[ix];
-    State*   sP    = ruleStateV[ix];
+    State*   sP    = psP->ruleStateV[ix];
 
     if (sP == NULL)
       continue;
@@ -840,20 +907,19 @@ long long patternsTimers(CepRules* rulesP, long long now, CepFireFn fire, void* 
     {
       if ((ruleP->kind == CepPatternCron) || (ruleP->kind == CepPatternAt))
       {
-        struct timespec wall;
-        clock_gettime(CLOCK_REALTIME, &wall);
-        long long wallMs = (long long) wall.tv_sec * 1000 + wall.tv_nsec / 1000000;
+        long long wall    = wallMs(psP, now);
+        time_t    wallSec = (time_t) (wall / 1000);
 
-        if ((pP->scheduleAt != 0) && ((long long) pP->scheduleAt * 1000 <= wallMs))
+        if ((pP->scheduleAt != 0) && ((long long) pP->scheduleAt * 1000 <= wall))
         {
           time_t at = pP->scheduleAt;
           fire(ruleP, NULL, ctx);
-          scheduleSet(ruleP, pP, (at > wall.tv_sec) ? at : wall.tv_sec);
+          scheduleSet(ruleP, pP, (at > wallSec) ? at : wallSec);
         }
 
         if (pP->scheduleAt != 0)
         {
-          long long at = now + ((long long) pP->scheduleAt * 1000 - wallMs);
+          long long at = now + ((long long) pP->scheduleAt * 1000 - wall);
           if ((next == 0) || (at < next))
             next = at;
         }
@@ -899,9 +965,9 @@ long long patternsTimers(CepRules* rulesP, long long now, CepFireFn fire, void* 
 //
 // patternsDropped - a rule's partial matches dropped since corCep started (the bound per partition)
 //
-long long patternsDropped(const char* ruleId)
+long long patternsDropped(CepPatterns* psP, const char* ruleId)
 {
-  for (State* sP = stateList; sP != NULL; sP = sP->next)
+  for (State* sP = psP->stateList; sP != NULL; sP = sP->next)
   {
     if (strcmp(sP->id, ruleId) == 0)
       return sP->dropped;
@@ -915,9 +981,9 @@ long long patternsDropped(const char* ruleId)
 //
 // patternsDroppedValues - a rule's window values dropped since corCep started (WINDOW_MAX per partition)
 //
-long long patternsDroppedValues(const char* ruleId)
+long long patternsDroppedValues(CepPatterns* psP, const char* ruleId)
 {
-  for (State* sP = stateList; sP != NULL; sP = sP->next)
+  for (State* sP = psP->stateList; sP != NULL; sP = sP->next)
   {
     if (strcmp(sP->id, ruleId) == 0)
       return sP->droppedValues;
