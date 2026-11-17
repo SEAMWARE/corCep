@@ -1,0 +1,145 @@
+#
+# FILE            cep_action_retry.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# The actions' PATCHes (src/sender.c): a queue per target, in order; retried with back-off for --retry-for when the
+# broker does not answer, or answers 5xx; then dropped and counted. A 404 is not retried. A target waiting does not
+# hold up the others, nor the patterns.
+#
+# The broker fails on demand: corCep talks to ftFlakyBroker.py, a proxy in front of the test broker that answers
+# PATCHes of the entities in $FAIL itself (503, or no answer) and logs every PATCH of attributes.
+#
+--NAME--
+actions retried for --retry-for (5xx, no answer), in order per target, then dropped and counted; 404 not retried
+
+--TAGS--
+cep action retry
+
+--INIT--
+cepTestInit
+
+--RUN--
+FAIL="$CEP_TEST_DIR/fail"
+PLOG="$CEP_TEST_DIR/patches.log"
+PPORT=$((CEP_PORT + 5))
+rm -f "$FAIL" "$PLOG"
+flakyBrokerStart $PPORT "$FAIL" "$PLOG"
+
+SW=urn:ngsi-ld:WallSwitch:hall
+L=urn:ngsi-ld:Light:hall
+F=urn:ngsi-ld:Fan:hall
+patches() { grep "^$1 " "$PLOG" 2>/dev/null | cut -d' ' -f2- ; }
+lightRule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"$1\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"$2\", \"set\": $3}]}}"; }
+ruleAttr() { curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/urn:ngsi-ld:Rule:$1?options=keyValues&pick=$2" |
+             python3 -I -c 'import json, sys; d = json.load(sys.stdin); print(d.get(sys.argv[1], "-"))' "$2"; }
+
+
+echo "01. A switch, a light, a fan; rules: 'a' level 1, 'b' level 2 on the light, 'c' the fan on, 'gone' a light"
+echo "    that does not exist; corCep through the proxy, --retry-for PT2S"
+echo "========================================================================================================"
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"a\": {\"type\": \"Property\", \"value\": 0}, \"b\": {\"type\": \"Property\", \"value\": 0}, \"c\": {\"type\": \"Property\", \"value\": 0}, \"gone\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"$L\", \"type\": \"Light\", \"level\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"$F\", \"type\": \"Fan\", \"on\": {\"type\": \"Property\", \"value\": false}}"
+lightRule a    "$L" '{"level": 1}'
+lightRule b    "$L" '{"level": 2}'
+lightRule c    "$F" '{"on": true}'
+lightRule gone urn:ngsi-ld:Light:nowhere '{"level": 1}'
+CEP_BROKER_URL="http://127.0.0.1:$PPORT" cepStart --retry-for PT2S --stats-interval 0
+subsAwait 4
+echo
+echo
+
+
+echo "02. The light's PATCHes answered 503: 'a' then 'b' wait - the fan's goes at once; healed after 1 s:"
+echo "    'a' then 'b', in that order - the light at 2"
+echo "=================================================================================================="
+echo "$L 503" > "$FAIL"
+press $SW a
+sleep 0.1
+press $SW b
+press $SW c
+sleep 0.5
+entityKv $F | grep -o '"on": [a-z]*'
+sleep 0.5
+rm -f "$FAIL"
+sleep 2
+patches $L | grep " 204$"
+entityKv $L | grep -o '"level": [0-9]*'
+grep -q "^$L .* 503$" "$PLOG" && echo "503 first: yes"
+echo
+echo
+
+
+echo "03. The light not answering at all, longer than --retry-for: dropped, counted, lastError says so"
+echo "================================================================================================="
+: > "$PLOG"
+echo "$L 0" > "$FAIL"
+press $SW a
+noAnswer() { sed -e 's/^[0-9:. -]*//' -e 's/Light:hall: .* - dropped/Light:hall: (no answer) - dropped/'; }
+cepAwaitLog "dropped, not sent within 2 s" 6 | noAnswer
+rm -f "$FAIL"
+sleep 0.3
+echo "droppedActions: $(ruleAttr a droppedActions)"
+ruleAttr a lastError | noAnswer
+n=$(patches $L | wc -l)
+[ "$n" -ge 3 ] && echo "tries: 3 or more - yes" || echo "tries: $n"
+echo
+echo
+
+
+echo "04. A 404 is not retried: one PATCH, the error at once"
+echo "======================================================"
+: > "$PLOG"
+press $SW gone
+cepAwaitLog "rule urn:ngsi-ld:Rule:gone: action 1" 3 | sed 's/^[0-9:. -]*//'
+sleep 1
+echo "tries: $(patches urn:ngsi-ld:Light:nowhere | wc -l)"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+cepPidStop "$CEP_TEST_DIR/proxy.pid"
+
+--EXPECT--
+01. A switch, a light, a fan; rules: 'a' level 1, 'b' level 2 on the light, 'c' the fan on, 'gone' a light
+    that does not exist; corCep through the proxy, --retry-for PT2S
+========================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. The light's PATCHes answered 503: 'a' then 'b' wait - the fan's goes at once; healed after 1 s:
+    'a' then 'b', in that order - the light at 2
+==================================================================================================
+"on": true
+{"level":{"type":"Property","value":1}} 204
+{"level":{"type":"Property","value":2}} 204
+"level": 2
+503 first: yes
+
+
+03. The light not answering at all, longer than --retry-for: dropped, counted, lastError says so
+=================================================================================================
+rule urn:ngsi-ld:Rule:a: action 1 - PATCH urn:ngsi-ld:Light:hall: (no answer) - dropped, not sent within 2 s
+droppedActions: 1
+action 1: PATCH urn:ngsi-ld:Light:hall: (no answer) - dropped, not sent within 2 s
+tries: 3 or more - yes
+
+
+04. A 404 is not retried: one PATCH, the error at once
+======================================================
+rule urn:ngsi-ld:Rule:gone: action 1 - PATCH urn:ngsi-ld:Light:nowhere: {"type":"https://uri.etsi.org/ngsi-ld/errors/ResourceNotFound","title":"Not Found","status":404,"detail":"entity 'urn:ngsi-ld:Light:nowhere' not found"}
+tries: 1
+
+

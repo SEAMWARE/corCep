@@ -31,7 +31,7 @@ make install          # /usr/local/bin/corCep (PREFIX=..., DESTDIR=...)
 ```
 corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant T]
        [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S]
-       [--renew-interval PT1H] [--state FILE]
+       [--renew-interval PT1H] [--retry-for PT30S] [--state FILE]
        [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
 ```
 
@@ -46,6 +46,7 @@ corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant
 | `--broker-cert`, `-bc` | the broker's own certificate (PEM), trusted as it is - for a broker whose certificate no CA signed and whose name is not the one in `--broker`. See [A broker with a certificate of its own](#a-broker-with-a-certificate-of-its-own) |
 | `--stats-interval`, `-si` | how often at most a rule's statistics are written to its Rule entity - seconds or ISO 8601 (default `PT10S`; 0: at once) - see [Statistics](#statistics) |
 | `--renew-interval`, `-ri` | how often corCep's subscriptions are renewed - seconds or ISO 8601 (default `PT1H`, up to `P365D`; 0: never) - a broker that keeps a subscription's owner only for a while (coraine `--auth oidc`: `--oidcOwnerMaxAge`, 24 h) stops notifying once it runs out, without a word |
+| `--retry-for`, `-rf` | how long an action's PATCH is tried again when the broker does not answer, or answers 408, 429 or 5xx - seconds or ISO 8601 (default `PT30S`, up to `PT1H`; 0: never again); then dropped and counted. See [Actions on their way](#actions-on-their-way) |
 | `--state`, `-st` | a file the patterns' state is kept in over a restart - matches half done, deadlines, window values, steps running (default: not kept). See [State over a restart](#state-over-a-restart) |
 | `--jwks`, `-jw` | the JWK Set - a URL (`http://`, `https://`) or a file - that the rule editors' tokens are checked against. Turns `POST /dry-run` on; keys that cannot be read: corCep does not start. See [Dry run](#dry-run) |
 | `--issuer`, `-is` | with `--jwks`: the `iss` a token must have (default: not checked) |
@@ -307,6 +308,7 @@ corCep writes each rule's statistics to its Rule entity, with `POST /entities/<r
 | `fired` | the times the rule fired - the count goes on from the entity's own value after a restart |
 | `droppedMatches` | open matches dropped because a rule had 32 for one entity already - written once there is one |
 | `droppedValues` | window values dropped because a window held 10000 already - written once there is one |
+| `droppedActions` | PATCHes dropped - not sent within `--retry-for`, or 100 waiting for one entity already - since corCep started; written once there is one. See [Actions on their way](#actions-on-their-way) |
 | `firedAt` | the last time it fired, a DateTime |
 | `lastError` | the last action that failed and why; `observedAt` is when |
 
@@ -354,6 +356,27 @@ corCep --broker https://localhost:1026 --broker-cert /etc/hub/tls/cert.pem --tok
 Without `--broker-cert`, an `https://` broker's certificate is checked against the system's CA store and its name.
 
 The test `cep_broker_auth` runs both against a broker of its own (HTTPS, OIDC with a JWK Set file - `broker.sh up` starts it).
+
+## Actions on their way
+
+A rule's `set`, `toggle` and `step` become PATCHes of the targets' attributes. corCep sends them from a thread of
+its own, so a broker slow or away holds up no pattern: events are matched, deadlines fire, while the PATCHes wait.
+
+| | |
+|---|---|
+| order | a queue per target entity: two actions on one light go out in the order they were made - the second waits for the first. Other entities' do not wait |
+| retried | when the broker does not answer, or answers 408, 429, 5xx: again after 0.25 s, 0.5 s, 1 s, ... (5 s at most between two), for `--retry-for` from when the action was made (default 30 s) |
+| then | dropped - a light switched minutes late is worse than not switched: logged, the rule's `lastError` says `dropped, not sent within 30 s`, its `droppedActions` counts it |
+| final | any other answer: a 404 (the entity is not there), a 400, ... - not retried; logged, `lastError` |
+| full | 100 waiting for one entity: the oldest is dropped, counted |
+| a stop | SIGTERM: corCep waits 2 s at most for the PATCHes waiting to go out; those left are logged, not kept |
+
+A `toggle` reads the target's value when the rule fires: a PATCH of that entity still waiting is not in it yet.
+
+The rule's `fired` counts a fire when its actions are made, not when they arrive; a failure comes after, in
+`lastError`.
+
+The test `cep_action_retry` runs it, against a proxy that fails on demand (`test/funcTests/tools/ftFlakyBroker.py`).
 
 ## State over a restart
 
@@ -509,6 +532,7 @@ too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JW
 | `cep_event_any` | `events` + `pattern`: `any` of two events fires the rule; a pattern naming one event uses that one |
 | `cep_when_left_out` | a `when` that is not right is left out, with the reason |
 | `cep_event_where` | `where` is the subscription's q: only matching updates fire |
+| `cep_action_retry` | a PATCH answered 503 retried, and the one after it on the same entity waits - in order; another entity's goes at once; no answer for longer than `--retry-for`: dropped, `droppedActions`, `lastError`; a 404 not retried |
 | `cep_state` | `--state`: a match half done, a window, an absence's deadline and a step over a stop and a crash; a deadline passed while down starts again; a file that is not a state |
 | `cep_rule_stats` | `fired`, `firedAt`, `lastError` on the Rule entity; no reload from them; the count survives a restart |
 | `cep_pattern_seq` | a double press within 1 s fires; 1.6 s apart does not, and the second press starts a new match |

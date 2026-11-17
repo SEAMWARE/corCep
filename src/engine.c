@@ -73,6 +73,7 @@ typedef struct Stats
   bool           dirty;                          // changed since written
   long long      droppedWritten;                 // droppedMatches as last written
   long long      droppedValuesWritten;           // droppedValues as last written
+  long long      droppedActions;                 // PATCHes dropped (sender.c: not sent within --retry-for, or a full queue), since start
   bool           seen;                           // in the generation running
   time_t         writtenAt;
 } Stats;
@@ -174,7 +175,7 @@ static CorNode* property(CorAlloc* allocP, const char* name, CorNode* valueP)
 //
 // failed - the reason of a broker request that did not do what it should
 //
-static void failed(char* why, int whyLen, const char* what, CepResponse* respP)
+void brokerFailed(char* why, int whyLen, const char* what, CepResponse* respP)
 {
   snprintf(why, whyLen, "%s: %s", what, (respP->status != 0) ? ((respP->text != NULL) ? respP->text : "no body") : respP->error);
 }
@@ -209,7 +210,7 @@ static CorNode* targetsGet(CorAlloc* allocP, CepAction* aP, bool values, char* w
 
     if ((brokerRequest(allocP, CorVerbGet, path, query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL))
     {
-      failed(why, whyLen, aP->entity, &resp);
+      brokerFailed(why, whyLen, aP->entity, &resp);
       return NULL;
     }
 
@@ -222,7 +223,7 @@ static CorNode* targetsGet(CorAlloc* allocP, CepAction* aP, bool values, char* w
 
   if ((brokerRequest(allocP, CorVerbGet, "/entities", query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL) || (resp.body->type != CorArray))
   {
-    failed(why, whyLen, "GET /entities", &resp);
+    brokerFailed(why, whyLen, "GET /entities", &resp);
     return NULL;
   }
 
@@ -233,23 +234,12 @@ static CorNode* targetsGet(CorAlloc* allocP, CepAction* aP, bool values, char* w
 
 // -----------------------------------------------------------------------------
 //
-// attrsPatch - PATCH /entities/<id>/attrs with { <name>: <value> }, as a Property
+// attrsPatch - PATCH /entities/<id>/attrs with { <name>: <value> }, as a Property - queued, to the sender
+// (sender.c); a failure comes back later, an "action" item (actionReport)
 //
-static bool attrsPatch(CorAlloc* allocP, const char* id, CorNode* bodyP, char* why, int whyLen)
+static void attrsPatch(CorAlloc* allocP, const char* ruleId, int action, const char* id, CorNode* bodyP)
 {
-  char        path[1024];
-  CepResponse resp;
-  char        what[600];
-
-  snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(allocP, id));
-  if ((brokerRequest(allocP, CorVerbPatch, path, NULL, bodyP, &resp) == false) || (resp.status != 204))
-  {
-    snprintf(what, sizeof(what), "PATCH %s", id);
-    failed(why, whyLen, what, &resp);
-    return false;
-  }
-
-  return true;
+  senderPatch(ruleId, action, id, jsonText(allocP, bodyP));
 }
 
 
@@ -461,13 +451,11 @@ static long long steppersRun(CorAlloc* allocP, long long now)
         {
           CorNode* bodyP = corTreeObject(allocP, NULL);
           CorNode* pP    = corTreeObject(allocP, sP->attribute);
-          char     why[512];
 
           corTreeChildAdd(pP, corTreeString(allocP, "type", "Property"));
           corTreeChildAdd(pP, numberNode(allocP, "value", v));
           corTreeChildAdd(bodyP, pP);
-          if (attrsPatch(allocP, sP->idV[ix], bodyP, why, sizeof(why)) == false)
-            logLine("rule %s: step - %s", sP->ruleId, why);
+          attrsPatch(allocP, sP->ruleId, 0, sP->idV[ix], bodyP);
           sP->valueV[ix] = v;
           stateDirty     = true;
         }
@@ -508,7 +496,7 @@ static long long steppersRun(CorAlloc* allocP, long long now)
 //
 // actionRun - one action on each of its targets; false: one target or more failed (why: the first reason)
 //
-static bool actionRun(CorAlloc* allocP, CepRule* ruleP, CepAction* aP, const char* entity, char* why, int whyLen)
+static bool actionRun(CorAlloc* allocP, CepRule* ruleP, int action, CepAction* aP, const char* entity, char* why, int whyLen)
 {
   if (aP->kind == CepActionStep)
     return stepperStart(allocP, ruleP, aP, entity, why, whyLen);
@@ -523,7 +511,6 @@ static bool actionRun(CorAlloc* allocP, CepRule* ruleP, CepAction* aP, const cha
   {
     CorNode* idP   = corTreeLookup(eP, "id");
     CorNode* bodyP = corTreeObject(allocP, NULL);
-    char     why2[512];
 
     if ((idP == NULL) || (idP->type != CorString))
       continue;
@@ -546,12 +533,7 @@ static bool actionRun(CorAlloc* allocP, CepRule* ruleP, CepAction* aP, const cha
       corTreeChildAdd(bodyP, property(allocP, aP->attribute, corTreeBoolean(allocP, aP->attribute, !vP->value.b)));
     }
 
-    if (attrsPatch(allocP, idP->value.s, bodyP, why2, sizeof(why2)) == false)
-    {
-      if (ok)
-        snprintf(why, whyLen, "%s", why2);
-      ok = false;
-    }
+    attrsPatch(allocP, ruleP->id, action, idP->value.s, bodyP);
   }
 
   return ok;
@@ -575,7 +557,7 @@ static bool condHolds(CorAlloc* allocP, CepRule* ruleP, CepCondition* cP)
   if ((brokerRequest(allocP, CorVerbGet, "/entities", query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL) || (resp.body->type != CorArray))
   {
     char why[512];
-    failed(why, sizeof(why), "GET /entities", &resp);
+    brokerFailed(why, sizeof(why), "GET /entities", &resp);
     logLine("rule %s: 'if' %s - not known, taken as false: %s", ruleP->id, cP->q, why);
     return false;
   }
@@ -733,6 +715,15 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
   }
   sP->droppedValuesWritten = droppedValues;
 
+  if (sP->droppedActions > 0)
+  {
+    CorNode* dP = corTreeObject(allocP, "droppedActions");
+
+    corTreeChildAdd(dP, corTreeString(allocP, "type", "Property"));
+    corTreeChildAdd(dP, corTreeInteger(allocP, "value", sP->droppedActions));
+    corTreeChildAdd(bodyP, dP);
+  }
+
   if (sP->lastError[0] != 0)
   {
     CorNode* errP = corTreeObject(allocP, "lastError");
@@ -778,6 +769,52 @@ static void statsFlush(CorAlloc* allocP, bool force)
 
 // -----------------------------------------------------------------------------
 //
+// actionReport - the sender's word on a PATCH that failed, or was dropped: "<rule>\n<action>\n<dropped>\n<why>"
+//
+static void actionReport(char* text)
+{
+  char* ruleId  = text;
+  char* actionS = strchr(ruleId, '\n');
+  char* droppedS = (actionS != NULL) ? strchr(actionS + 1, '\n') : NULL;
+  char* why      = (droppedS != NULL) ? strchr(droppedS + 1, '\n') : NULL;
+
+  if (why == NULL)
+    return;
+  *actionS++  = 0;
+  *droppedS++ = 0;
+  *why++      = 0;
+
+  int    action = atoi(actionS);
+  Stats* sP     = NULL;
+
+  for (Stats* xP = statsList; (xP != NULL) && (sP == NULL); xP = xP->next)
+  {
+    if (strcmp(xP->id, ruleId) == 0)
+      sP = xP;
+  }
+
+  if (action == 0)
+    logLine("rule %s: step - %s", ruleId, why);
+  else
+    logLine("rule %s: action %d - %s", ruleId, action, why);
+
+  if (sP == NULL)                                // the rule is gone meanwhile
+    return;
+
+  if (action == 0)
+    snprintf(sP->lastError, sizeof(sP->lastError), "step: %s", why);
+  else
+    snprintf(sP->lastError, sizeof(sP->lastError), "action %d: %s", action, why);
+  nowIso(sP->lastErrorAt, sizeof(sP->lastErrorAt));
+  if (atoi(droppedS) == 1)
+    ++sP->droppedActions;
+  sP->dirty = true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // ruleFire - its actions, in order; one failing does not stop the others
 //
 static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
@@ -802,7 +839,7 @@ static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
   {
     CepAction* aP       = &ruleP->actionV[ix];
     char       why[512] = { 0 };
-    bool       ok       = actionRun(allocP, ruleP, aP, entity, why, sizeof(why));
+    bool       ok       = actionRun(allocP, ruleP, ix + 1, aP, entity, why, sizeof(why));
 
     if (ok == false)
     {
@@ -1145,6 +1182,9 @@ void engineRun(void)
     //
     if (cepStopping)
     {
+      int left = senderDrain(2000);              // the PATCHes made go out first - 2 s at most
+      if (left > 0)
+        logLine("stopping: %d action%s not sent", left, (left == 1) ? "" : "s");
       stateSave(patterns);
       statsFlush(&alloc, true);
       logLine("stopped (signal %d)%s", (int) cepStopping, (stateFile != NULL) ? " - the state written" : "");
@@ -1190,6 +1230,8 @@ void engineRun(void)
 
     if (strcmp(iP->which, "rules") == 0)
       rulesReload();
+    else if (strcmp(iP->which, "action") == 0)
+      actionReport(iP->body);
     else
       eventHandle(&alloc, atoi(iP->which), iP->body);
 

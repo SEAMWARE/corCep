@@ -7,7 +7,7 @@
 // corCep - an NGSI-LD complex event processor (doc/design.md)
 //
 //   corCep --broker http://host:port [--port 7602] [--notify-url http://host:7602] [--tenant T]
-//          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S] [--renew-interval PT1H]
+//          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S] [--renew-interval PT1H] [--retry-for PT30S]
 //          [--state FILE] [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
 //
 #include <stdarg.h>                              // va_list
@@ -49,6 +49,7 @@ static char* rolesClaimArg = NULL;
 static char* editorRoleArg = NULL;
 static int   jwksRefreshArg = 300;
 static char* stateArg     = NULL;
+static int   retryForArg  = 30;
 
 volatile sig_atomic_t cepStopping = 0;
 
@@ -69,6 +70,7 @@ static CorArg options[] =
   { "--broker-cert", "-bc", CorArgString, &brokerCertArg, CorArgOpt, NULL,     NULL,  NULL,        "the broker's own certificate (PEM): trusted as it is, instead of the CA store and the host name" },
   { "--stats-interval", "-si", CorArgDuration, &statsInterval, CorArgOpt, _vp 10,  _vp 0, _vp 86400,   "how often at most a rule's statistics are written to its Rule entity - seconds or ISO 8601 (PT10S, PT1M; 0: at once)" },
   { "--renew-interval", "-ri", CorArgDuration, &renewInterval, CorArgOpt, _vp 3600, _vp 0, _vp 31536000, "how often corCep's subscriptions are renewed - seconds or ISO 8601 (PT1H, P1D; up to P365D; 0: never). A broker that keeps a subscription's owner only for a while (coraine --auth oidc: 24 h) stops notifying once it runs out" },
+  { "--retry-for",  "-rf", CorArgDuration, &retryForArg,  CorArgOpt, _vp 30,    _vp 0, _vp 3600,  "how long an action's PATCH is tried again when the broker does not answer, or answers 408, 429, 5xx - seconds or ISO 8601 (default PT30S, up to PT1H; 0: never again); then dropped and counted" },
   { "--state",      "-st", CorArgString, &stateArg,     CorArgOpt, NULL,      NULL,  NULL,        "a file the patterns' state is kept in over a restart - open matches, deadlines, window values (default: not kept)" },
   { "--jwks",       "-jw", CorArgString, &jwksArg,      CorArgOpt, NULL,      NULL,  NULL,        "the JWK Set (a URL or a file) the rule editors' tokens are checked against - turns POST /dry-run on" },
   { "--issuer",     "-is", CorArgString, &issuerArg,    CorArgOpt, NULL,      NULL,  NULL,        "with --jwks: the iss a token must have (default: not checked)" },
@@ -271,6 +273,12 @@ int main(int argC, char* argV[])
 
   if (subsInit() == false)
     return 1;
+
+  if (senderStart(retryForArg) == false)
+  {
+    logLine("the actions' sender could not be started");
+    return 1;
+  }
 
   engineRun();
   return 0;
