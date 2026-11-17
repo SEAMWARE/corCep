@@ -87,6 +87,8 @@ that failed.
 | `then[].toggle` | `"<attribute>"` - a boolean: read, the other value PATCHed - per target |
 | `then[].step` | `{ "attribute", "by", "every", "min", "max", "for" }` - a number changed `by` every `every` - see below |
 | `then[].until` | with `step`: the event that stops it |
+| `then[].create` | `{ "id"?, "type", "<attribute>": <value>, ... }` - an entity created (`POST /entities`), the values as Properties; no target besides. No `id`: corCep makes one each time, `urn:ngsi-ld:<type>:<the rule id's last part>-<ms>-<n>` - an alert, a log entry. One there already (409): `lastError` |
+| `then[].delete` | `true` - the target deleted, one entity or every one of the group; or `"<id>"` - that entity (no `entity` besides). Gone already (404): done, no error |
 | `enabled` | a Property; `false`: the rule is not run |
 | `location` | a GeoProperty, a Point: where the sun of an `at: "sunrise"` / `"sunset"` rule is |
 
@@ -360,12 +362,13 @@ The test `cep_broker_auth` runs both against a broker of its own (HTTPS, OIDC wi
 
 ## Actions on their way
 
-A rule's `set`, `toggle` and `step` become PATCHes of the targets' attributes. corCep sends them from a thread of
-its own, so a broker slow or away holds up no pattern: events are matched, deadlines fire, while the PATCHes wait.
+A rule's `set`, `toggle` and `step` become PATCHes of the targets' attributes, `create` a POST, `delete` a DELETE.
+corCep sends them from a thread of its own, so a broker slow or away holds up no pattern: events are matched,
+deadlines fire, while the requests wait.
 
 | | |
 |---|---|
-| order | a queue per target entity: two actions on one light go out in the order they were made - the second waits for the first. Other entities' do not wait |
+| order | a queue per target entity: two actions on one light go out in the order they were made - the second waits for the first; a `create`, a `set` and a `delete` of one entity, in that order. Other entities' do not wait |
 | retried | when the broker does not answer, or answers 408, 429, 5xx: again after 0.25 s, 0.5 s, 1 s, ... (5 s at most between two), for `--retry-for` from when the action was made (default 30 s) |
 | then | dropped - a light switched minutes late is worse than not switched: logged, the rule's `lastError` says `dropped, not sent within 30 s`, its `droppedActions` counts it |
 | final | any other answer: a 404 (the entity is not there), a 400, ... - not retried; logged, `lastError` |
@@ -555,6 +558,7 @@ too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JW
 | `cep_event_where` | `where` is the subscription's q: only matching updates fire |
 | `cep_action_retry` | a PATCH answered 503 retried, and the one after it on the same entity waits - in order; another entity's goes at once; no answer for longer than `--retry-for`: dropped, `droppedActions`, `lastError`; a 404 not retried |
 | `cep_queue_bound` | a full event queue drops its oldest notifications, logged; all answered 204 - the broker counts no failure, no cooldown follows |
+| `cep_action_create_delete` | `create` with an id made each time, and with one given (twice: 409, `lastError`); `delete` of a group, of one id (twice: no error); create, set, delete of one entity in one rule - in order |
 | `cep_state` | `--state`: a match half done, a window, an absence's deadline and a step over a stop and a crash; a deadline passed while down starts again; a file that is not a state |
 | `cep_rule_stats` | `fired`, `firedAt`, `lastError` on the Rule entity; no reload from them; the count survives a restart |
 | `cep_pattern_seq` | a double press within 1 s fires; 1.6 s apart does not, and the second press starts a new match |

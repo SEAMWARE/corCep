@@ -587,6 +587,23 @@ static CorNode* actionNode(Dr* drP, CepAction* aP)
       corTreeChildAdd(objP, stepP);
     }
     break;
+
+  case CepActionCreate:                          // the entity as written - an id corCep makes is not shown, none is made
+    {
+      CorNode* createP = corTreeClone(allocP, aP->set);
+      CorNode* idP     = corTreeLookup(aP->set, "id");
+
+      createP->name = (char*) "create";
+      corTreeChildAdd(objP, createP);
+      if (idP != NULL)
+        corTreeChildAdd(targP, corTreeString(allocP, NULL, idP->value.s));
+      corTreeChildAdd(objP, targP);
+      return objP;
+    }
+
+  case CepActionDelete:
+    corTreeChildAdd(objP, corTreeBoolean(allocP, "delete", true));
+    break;
   }
 
   if (aP->entity != NULL)

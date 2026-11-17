@@ -20,6 +20,7 @@
 #include <string.h>                              // strcmp, memcpy
 #include <time.h>                                // clock_gettime, gmtime_r, strftime
 
+#include "corAlloc/corAlloc.h"                   // corAlloc
 #include "corAlloc/corAllocBufferInit.h"         // corAllocBufferInit
 #include "corAlloc/corAllocBufferReset.h"        // corAllocBufferReset
 #include "corJson/CorJson.h"                     // CorJson
@@ -588,12 +589,65 @@ static long long steppersRun(CorAlloc* allocP, long long now)
 
 // -----------------------------------------------------------------------------
 //
+// createdId - an id for a 'create' without one: urn:ngsi-ld:<type>:<the rule id's last part>-<ms>-<n> - <n> counts
+// within corCep's run, so two creates in one millisecond differ
+//
+static char* createdId(CorAlloc* allocP, CepRule* ruleP, const char* type)
+{
+  static long long n    = 0;
+  const char*      last = strrchr(ruleP->id, ':');
+  struct timespec  ts;
+
+  clock_gettime(CLOCK_REALTIME, &ts);
+
+  int   len = strlen(type) + strlen(ruleP->id) + 64;
+  char* id  = corAlloc(allocP, len);
+
+  snprintf(id, len, "urn:ngsi-ld:%s:%s-%lld-%lld", type, (last != NULL) ? last + 1 : ruleP->id,
+           (long long) ts.tv_sec * 1000 + ts.tv_nsec / 1000000, ++n);
+  return id;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// entityCreate - a 'create': the entity, its values as Properties - queued (sender.c) on the new entity's id, so a
+// PATCH or a delete of it made later goes out after it
+//
+static bool entityCreate(CorAlloc* allocP, CepRule* ruleP, int action, CepAction* aP)
+{
+  CorNode*    bodyP = corTreeObject(allocP, NULL);
+  CorNode*    idP   = corTreeLookup(aP->set, "id");
+  CorNode*    typeP = corTreeLookup(aP->set, "type");
+  const char* id    = (idP != NULL) ? idP->value.s : createdId(allocP, ruleP, typeP->value.s);
+
+  corTreeChildAdd(bodyP, corTreeString(allocP, "id", id));
+  corTreeChildAdd(bodyP, corTreeString(allocP, "type", typeP->value.s));
+
+  for (CorNode* vP = aP->set->value.head; vP != NULL; vP = vP->next)
+  {
+    if ((strcmp(vP->name, "id") != 0) && (strcmp(vP->name, "type") != 0))
+      corTreeChildAdd(bodyP, property(allocP, vP->name, vP));
+  }
+
+  senderCreate(ruleP->id, action, id, jsonText(allocP, bodyP));
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // actionRun - one action on each of its targets; false: one target or more failed (why: the first reason)
 //
 static bool actionRun(CorAlloc* allocP, CepRule* ruleP, int action, CepAction* aP, const char* entity, char* why, int whyLen)
 {
   if (aP->kind == CepActionStep)
     return stepperStart(allocP, ruleP, aP, entity, why, whyLen);
+
+  if (aP->kind == CepActionCreate)
+    return entityCreate(allocP, ruleP, action, aP);
 
   CorNode* listP = targetsGet(allocP, aP, aP->kind == CepActionToggle, why, whyLen);
   if (listP == NULL)
@@ -608,6 +662,12 @@ static bool actionRun(CorAlloc* allocP, CepRule* ruleP, int action, CepAction* a
 
     if ((idP == NULL) || (idP->type != CorString))
       continue;
+
+    if (aP->kind == CepActionDelete)
+    {
+      senderDelete(ruleP->id, action, idP->value.s);
+      continue;
+    }
 
     if (aP->kind == CepActionSet)
     {

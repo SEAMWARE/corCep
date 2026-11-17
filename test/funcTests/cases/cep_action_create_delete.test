@@ -1,0 +1,162 @@
+#
+# FILE            cep_action_create_delete.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# 'create' (POST /entities - an id made each time when the rule gives none) and 'delete' (one entity, an id, or a
+# group). Both go on the target's queue (src/sender.c): a create, a set and a delete of one entity, in one rule, go
+# out in that order. A delete of an entity gone already is done; a create of one there already fails (lastError).
+#
+--NAME--
+create (an id made, or given) and delete (one, a group) actions - in order with the set of the same entity
+
+--TAGS--
+cep action create delete
+
+--INIT--
+cepTestInit
+
+--RUN--
+SW=urn:ngsi-ld:WallSwitch:hall
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"$1\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": $2}}"; }
+ids() { curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities?type=$1&options=keyValues" |
+        python3 -I -c 'import json, sys; [print(e["id"], json.dumps({k: v for k, v in sorted(e.items()) if k not in ("id", "type")})) for e in sorted(json.load(sys.stdin), key=lambda e: e["id"])]'; }
+ruleAttr() { curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/urn:ngsi-ld:Rule:$1?options=keyValues&pick=$2" |
+             python3 -I -c 'import json, sys; d = json.load(sys.stdin); print(d.get(sys.argv[1], "-"))' "$2"; }
+lastLine() { grep "$1" "$CEP_TEST_DIR/corCep.log" | tail -1 | sed 's/^[0-9:. -]*//'; }
+
+
+echo "01. A switch; rules: 'alert' creates an Alert (no id), 'note' creates urn:ngsi-ld:Note:one, 'clear' deletes"
+echo "    every Alert of the hall, 'unnote' deletes urn:ngsi-ld:Note:one, 'cycle' creates, sets and deletes one"
+echo "    entity, 'make' creates one and sets it; three rules not right"
+echo "=========================================================================================================="
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"alert\": {\"type\": \"Property\", \"value\": 0}, \"note\": {\"type\": \"Property\", \"value\": 0}, \"clear\": {\"type\": \"Property\", \"value\": 0}, \"unnote\": {\"type\": \"Property\", \"value\": 0}, \"cycle\": {\"type\": \"Property\", \"value\": 0}, \"make\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Alert:kitchen", "type": "Alert", "room": {"type": "Property", "value": "kitchen"}}'
+rule alert  '[{"create": {"type": "Alert", "room": "hall", "level": 2}}]'
+rule note   '[{"create": {"id": "urn:ngsi-ld:Note:one", "type": "Note", "text": "hello"}}]'
+rule clear  '[{"delete": true, "type": "Alert", "q": "room==\"hall\""}]'
+rule unnote '[{"delete": "urn:ngsi-ld:Note:one"}]'
+rule cycle  '[{"create": {"id": "urn:ngsi-ld:Thing:c", "type": "Thing", "n": 1}}, {"entity": "urn:ngsi-ld:Thing:c", "set": {"n": 2}}, {"delete": "urn:ngsi-ld:Thing:c"}]'
+rule make   '[{"create": {"id": "urn:ngsi-ld:Thing:m", "type": "Thing", "n": 1}}, {"entity": "urn:ngsi-ld:Thing:m", "set": {"n": 2}}]'
+rule bad1   '[{"entity": "urn:ngsi-ld:Thing:x", "create": {"type": "Thing"}}]'
+rule bad2   '[{"create": {"id": "nocolon", "type": "Thing"}}]'
+rule bad3   '[{"delete": false, "entity": "urn:ngsi-ld:Thing:x"}]'
+cepStart --stats-interval 0
+grep -o "rule urn:ngsi-ld:Rule:.* left out: .*" "$CEP_TEST_DIR/corCep.log" | sort
+echo
+echo
+
+
+echo "02. 'alert' twice: two Alerts, each an id of its own (urn:ngsi-ld:Alert:alert-<ms>-<n>)"
+echo "========================================================================================"
+press $SW alert
+press $SW alert
+sleep 0.5
+ids Alert | sed -E 's/^urn:ngsi-ld:Alert:alert-[0-9]{13}-[0-9]+ /urn:ngsi-ld:Alert:alert-MS-N /'
+echo
+echo
+
+
+echo "03. 'note' twice: the first creates it, the second fails - it is there already (lastError)"
+echo "=========================================================================================="
+press $SW note
+sleep 0.3
+press $SW note
+cepAwaitLog "Rule:note: action 1" 3 > /dev/null
+ids Note
+ruleAttr note lastError | sed 's/"detail":"[^"]*"/"detail":"..."/'
+echo
+echo
+
+
+echo "04. 'clear': the hall's Alerts deleted - the kitchen's stays"
+echo "============================================================"
+press $SW clear
+sleep 0.5
+ids Alert
+echo
+echo
+
+
+echo "05. 'unnote' twice: deleted; the second - gone already - is done, no error"
+echo "=========================================================================="
+press $SW unnote
+sleep 0.3
+press $SW unnote
+sleep 0.5
+echo "Notes: $(ids Note | wc -l)"
+echo "unnote lastError: $(ruleAttr unnote lastError)"
+echo
+echo
+
+
+echo "06. 'cycle': create, set, delete of one entity, in order - none fails, it is gone; 'make': it has n 2"
+echo "======================================================================================================"
+press $SW cycle
+press $SW make
+sleep 0.8
+ids Thing
+echo "cycle lastError: $(ruleAttr cycle lastError)"
+echo "make lastError: $(ruleAttr make lastError)"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A switch; rules: 'alert' creates an Alert (no id), 'note' creates urn:ngsi-ld:Note:one, 'clear' deletes
+    every Alert of the hall, 'unnote' deletes urn:ngsi-ld:Note:one, 'cycle' creates, sets and deletes one
+    entity, 'make' creates one and sets it; three rules not right
+==========================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+rule urn:ngsi-ld:Rule:bad1 left out: 'create' makes its entity - no 'entity', 'type', 'q', 'until' besides (the type goes inside)
+rule urn:ngsi-ld:Rule:bad2 left out: 'create' - "id" is a URI (urn:ngsi-ld:...); leave it out and corCep makes one each time
+rule urn:ngsi-ld:Rule:bad3 left out: 'delete' - true (the target: 'entity', or 'type' and 'q'), or an entity id
+
+
+02. 'alert' twice: two Alerts, each an id of its own (urn:ngsi-ld:Alert:alert-<ms>-<n>)
+========================================================================================
+urn:ngsi-ld:Alert:alert-MS-N {"level": 2, "room": "hall"}
+urn:ngsi-ld:Alert:alert-MS-N {"level": 2, "room": "hall"}
+urn:ngsi-ld:Alert:kitchen {"room": "kitchen"}
+
+
+03. 'note' twice: the first creates it, the second fails - it is there already (lastError)
+==========================================================================================
+urn:ngsi-ld:Note:one {"text": "hello"}
+action 1: POST urn:ngsi-ld:Note:one: {"type":"https://uri.etsi.org/ngsi-ld/errors/AlreadyExists","title":"Already Exists","status":409,"detail":"..."}
+
+
+04. 'clear': the hall's Alerts deleted - the kitchen's stays
+============================================================
+urn:ngsi-ld:Alert:kitchen {"room": "kitchen"}
+
+
+05. 'unnote' twice: deleted; the second - gone already - is done, no error
+==========================================================================
+Notes: 0
+unnote lastError: -
+
+
+06. 'cycle': create, set, delete of one entity, in order - none fails, it is gone; 'make': it has n 2
+======================================================================================================
+urn:ngsi-ld:Thing:m {"n": 2}
+cycle lastError: -
+make lastError: -
+
+

@@ -218,8 +218,8 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 
 | | |
 |---|---|
-| built | events, `where`; any / seq / all / repeat / absent / window; cron / at; `supersedes`; `if` (all / any); set / toggle / step ... until on one entity or a group; Rule statistics; broker auth (`--token-command`, `--broker-cert`); subscriptions renewed; `/dry-run` (the caller's token against `--jwks`; a pure replay - `where`, `if` and groups against the request's entities, corNgsild's q matcher); `--state` (matches, deadlines, windows and steps over a restart); the actions on a thread of their own, a queue per target, retried for `--retry-for` with back-off, then dropped and counted (`droppedActions`); the event queue bounded (`--queue-max`) - full, the oldest dropped; never an error to the broker, whose cooldown would skip the subscription for 30 s |
-| to build | `create` / `delete` actions; `${...}` match values in actions; the author's rights checked per target (section 7) |
+| built | events, `where`; any / seq / all / repeat / absent / window; cron / at; `supersedes`; `if` (all / any); set / toggle / step ... until on one entity or a group; Rule statistics; broker auth (`--token-command`, `--broker-cert`); subscriptions renewed; `/dry-run` (the caller's token against `--jwks`; a pure replay - `where`, `if` and groups against the request's entities, corNgsild's q matcher); `--state` (matches, deadlines, windows and steps over a restart); the actions on a thread of their own, a queue per target, retried for `--retry-for` with back-off, then dropped and counted (`droppedActions`); the event queue bounded (`--queue-max`) - full, the oldest dropped; never an error to the broker, whose cooldown would skip the subscription for 30 s; `create` (an id made when none is given) and `delete` (one, an id, a group), on the target's queue |
+| to build | `${...}` match values in actions; the author's rights checked per target (section 7) |
 | packaging | a version tag and `--version`, a Docker image, the docs, the repo public |
 
 **v1.1** - `cep.so`: the engine as a library, a coraine write-path hook (under its own `COR_FEATURE` flag),
