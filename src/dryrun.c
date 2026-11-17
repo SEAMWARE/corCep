@@ -584,6 +584,9 @@ static void fireCb(CepRule* ruleP, const char* entity, void* ctx)
   else
     corTreeChildAdd(fP, corTreeNull(allocP, "entity"));
 
+  int first = 0;
+  int end   = ruleP->thens;
+
   for (int ix = 0; ix < ruleP->conds; ix++)
   {
     CepCondition* failP = condFailingHere(drP, &ruleP->condV[ix]);
@@ -595,15 +598,25 @@ static void fireCb(CepRule* ruleP, const char* entity, void* ctx)
 
       condText(failP, text, sizeof(text));
       snprintf(why, sizeof(why), "'if' %s does not hold", text);
-      corTreeChildAdd(fP, corTreeBoolean(allocP, "fired", false));
+
+      if (ruleP->thens == ruleP->actions)          // no else: not fired
+      {
+        corTreeChildAdd(fP, corTreeBoolean(allocP, "fired", false));
+        corTreeChildAdd(fP, corTreeString(allocP, "why", corAllocStrdup(allocP, why)));
+        corTreeChildAdd(drP->firesP, fP);
+        return;
+      }
+
+      corTreeChildAdd(fP, corTreeBoolean(allocP, "else", true));
       corTreeChildAdd(fP, corTreeString(allocP, "why", corAllocStrdup(allocP, why)));
-      corTreeChildAdd(drP->firesP, fP);
-      return;
+      first = ruleP->thens;
+      end   = ruleP->actions;
+      break;
     }
   }
 
   CorNode* actionsP = corTreeArray(allocP, "actions");
-  for (int ix = 0; ix < ruleP->actions; ix++)
+  for (int ix = first; ix < end; ix++)
   {
     CepAction* aP = &ruleP->actionV[ix];
     CepAction  resolved;

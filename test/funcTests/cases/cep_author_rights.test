@@ -44,7 +44,7 @@ THEN_G='[{"type": "Light", "q": "room==\"hall\"", "set": {"on": true}}]'
 THEN_D='[{"entity": "urn:ngsi-ld:Light:d", "set": {"on": true}}]'
 
 
-echo "01. Lights, a switch; alice may write Light:a and Light:c, bob nothing - seven rules, four not signed right"
+echo "01. Lights, a switch; alice may write Light:a and Light:c, bob nothing - eight rules, five not signed right"
 echo "======================================================================================================="
 for l in a b c d; do ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Light:$l\", \"type\": \"Light\", \"room\": {\"type\": \"Property\", \"value\": \"hall\"}, \"on\": {\"type\": \"Property\", \"value\": false}}"; done
 ngsildStatus POST /entities "{\"id\": \"$S\", \"type\": \"WallSwitch\", \"press\": {\"type\": \"Property\", \"value\": 0}}"
@@ -57,6 +57,10 @@ rule unsigned "$WHEN" "$THEN_A"
 rule edited   "$WHEN" "$THEN_B" "$(sign alice "{\"when\": $WHEN, \"then\": $THEN_A}")"
 rule stranger "$WHEN" "$THEN_A" "$(sign alice "{\"when\": $WHEN, \"then\": $THEN_A}" http://editor.test stranger)"
 rule elsewhere "$WHEN" "$THEN_A" "$(sign alice "{\"when\": $WHEN, \"then\": $THEN_A}" http://other.test)"
+WHEN_IF="{\"entity\": \"$S\", \"attribute\": \"press\", \"if\": {\"entity\": \"urn:ngsi-ld:Light:a\", \"q\": \"on==false\"}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:elseEdited\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": $WHEN_IF},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": $THEN_A}, \"else\": {\"type\": \"JsonProperty\", \"json\": $THEN_B},
+  \"author\": {\"type\": \"Property\", \"value\": \"$(sign alice "{\"when\": $WHEN_IF, \"then\": $THEN_A, \"else\": $THEN_A}")\"}}"
 cepStart --stats-interval 0 --pdp "http://127.0.0.1:$PDP_PORT/v1/data/policy/main/allow" --author-jwks "$CEP_TEST_DIR/jwks.json" --author-issuer http://editor.test \
          --jwks "$CEP_TEST_DIR/jwks.json" --issuer http://editor.test
 cepAwaitLog "the authors' rights checked" | sed 's|keys: /.*/jwks.json|keys: .../jwks.json|'
@@ -119,7 +123,7 @@ cepStop
 cepPidStop "$CEP_TEST_DIR/pdp.pid"
 
 --EXPECT--
-01. Lights, a switch; alice may write Light:a and Light:c, bob nothing - seven rules, four not signed right
+01. Lights, a switch; alice may write Light:a and Light:c, bob nothing - eight rules, five not signed right
 =======================================================================================================
 POST /entities: 201
 POST /entities: 201
@@ -133,8 +137,10 @@ POST /entities: 201
 POST /entities: 201
 POST /entities: 201
 POST /entities: 201
+POST /entities: 201
 the authors' rights checked: http://127.0.0.1:7631/v1/data/policy/main/allow asked, rules signed by http://editor.test (keys: .../jwks.json)
-rule urn:ngsi-ld:Rule:edited left out: 'author' signs another rule - its "rule" is not this rule's when and then (edited after it was signed?)
+rule urn:ngsi-ld:Rule:edited left out: 'author' signs another rule - its "rule" is not this rule's when, then and else (edited after it was signed?)
+rule urn:ngsi-ld:Rule:elseEdited left out: 'author' signs another rule - its "rule" is not this rule's when, then and else (edited after it was signed?)
 rule urn:ngsi-ld:Rule:elsewhere left out: 'author': wrong issuer
 rule urn:ngsi-ld:Rule:stranger left out: 'author': signed by an unknown key
 rule urn:ngsi-ld:Rule:unsigned left out: not signed - an 'author' (the rule editor's signature) is needed: --pdp is on

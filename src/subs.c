@@ -96,6 +96,8 @@ static bool subCreate(CorAlloc* allocP, const char* id, const char* entity, cons
     CorNode* watchedP  = corTreeArray(allocP, "watchedAttributes");
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "when"));
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "then"));
+    corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "else"));
+    corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "author"));
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "enabled"));
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "name"));
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "location"));         // sunrise / sunset: the rule's place
