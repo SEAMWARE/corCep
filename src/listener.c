@@ -57,7 +57,7 @@ static void requestCb(CorHttpConn* connP)
   memcpy(which, connP->path.s + prefixLen, whichLen);
   which[whichLen] = 0;
 
-  engineQueue(which, connP->body.s, connP->body.len);
+  engineQueue(which, connP->body.s, connP->body.len);   // never refused: a failure would stop the broker notifying (cooldown)
   corHttpResponseStatus(connP, 204);
 }
 

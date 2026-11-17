@@ -31,7 +31,7 @@ make install          # /usr/local/bin/corCep (PREFIX=..., DESTDIR=...)
 ```
 corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant T]
        [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S]
-       [--renew-interval PT1H] [--retry-for PT30S] [--state FILE]
+       [--renew-interval PT1H] [--retry-for PT30S] [--queue-max N] [--state FILE]
        [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
 ```
 
@@ -46,6 +46,7 @@ corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant
 | `--broker-cert`, `-bc` | the broker's own certificate (PEM), trusted as it is - for a broker whose certificate no CA signed and whose name is not the one in `--broker`. See [A broker with a certificate of its own](#a-broker-with-a-certificate-of-its-own) |
 | `--stats-interval`, `-si` | how often at most a rule's statistics are written to its Rule entity - seconds or ISO 8601 (default `PT10S`; 0: at once) - see [Statistics](#statistics) |
 | `--renew-interval`, `-ri` | how often corCep's subscriptions are renewed - seconds or ISO 8601 (default `PT1H`, up to `P365D`; 0: never) - a broker that keeps a subscription's owner only for a while (coraine `--auth oidc`: `--oidcOwnerMaxAge`, 24 h) stops notifying once it runs out, without a word |
+| `--queue-max`, `-qm` | event notifications waiting for the engine, at most (default 10000, 1 to 1000000; and 64 MiB of their bodies) - full, the oldest are dropped. See [A burst of events](#a-burst-of-events) |
 | `--retry-for`, `-rf` | how long an action's PATCH is tried again when the broker does not answer, or answers 408, 429 or 5xx - seconds or ISO 8601 (default `PT30S`, up to `PT1H`; 0: never again); then dropped and counted. See [Actions on their way](#actions-on-their-way) |
 | `--state`, `-st` | a file the patterns' state is kept in over a restart - matches half done, deadlines, window values, steps running (default: not kept). See [State over a restart](#state-over-a-restart) |
 | `--jwks`, `-jw` | the JWK Set - a URL (`http://`, `https://`) or a file - that the rule editors' tokens are checked against. Turns `POST /dry-run` on; keys that cannot be read: corCep does not start. See [Dry run](#dry-run) |
@@ -378,6 +379,26 @@ The rule's `fired` counts a fire when its actions are made, not when they arrive
 
 The test `cep_action_retry` runs it, against a proxy that fails on demand (`test/funcTests/tools/ftFlakyBroker.py`).
 
+## A burst of events
+
+The broker's notifications wait in a queue for the engine. It holds `--queue-max` event notifications (default
+10000) and 64 MiB of their bodies at most. Full - a burst faster than the engine, a slow broker under the `if`s - the
+**oldest** waiting are dropped to make room: an event handled late is worse than not handled, and the newest are
+what the place is now.
+
+```
+2026-11-17 13:12:54.187 the event queue is full (3 notifications) - the oldest dropped till it drains
+2026-11-17 13:12:55.199 the event queue has room again - 8 notifications dropped while it was full
+```
+
+Every notification is answered 204, dropped or not. An error would be worse: after a failed notification an NGSI-LD
+broker skips the subscription's notifications for its endpoint's cooldown (§ 5.2.15 - coraine: 30 s by default),
+every event of it lost, not only the burst's.
+
+A rule reload and an action's failure report are never dropped; a reload already waiting is not queued twice.
+
+The test `cep_queue_bound` runs it: `--queue-max 3`, the broker's GETs made slow, 12 presses at once.
+
 ## State over a restart
 
 ```
@@ -533,6 +554,7 @@ too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JW
 | `cep_when_left_out` | a `when` that is not right is left out, with the reason |
 | `cep_event_where` | `where` is the subscription's q: only matching updates fire |
 | `cep_action_retry` | a PATCH answered 503 retried, and the one after it on the same entity waits - in order; another entity's goes at once; no answer for longer than `--retry-for`: dropped, `droppedActions`, `lastError`; a 404 not retried |
+| `cep_queue_bound` | a full event queue drops its oldest notifications, logged; all answered 204 - the broker counts no failure, no cooldown follows |
 | `cep_state` | `--state`: a match half done, a window, an absence's deadline and a step over a stop and a crash; a deadline passed while down starts again; a file that is not a state |
 | `cep_rule_stats` | `fired`, `firedAt`, `lastError` on the Rule entity; no reload from them; the count survives a restart |
 | `cep_pattern_seq` | a double press within 1 s fires; 1.6 s apart does not, and the second press starts a new match |

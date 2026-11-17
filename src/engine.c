@@ -42,12 +42,22 @@ typedef struct Item
   struct Item*  next;
   char          which[32];
   char*         body;                            // NUL-terminated, malloc'd
+  int           bodyLen;
+  bool          event;                           // a notification of an event subscription - the bounded kind
 } Item;
 
 static pthread_mutex_t  queueMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t   queueCond  = PTHREAD_COND_INITIALIZER;
 static Item*            queueHead  = NULL;
 static Item*            queueTail  = NULL;
+static int              queueEvents = 0;         // event notifications waiting
+static long long        queueBytes  = 0;         // their bodies' bytes
+static bool             rulesQueued = false;     // a "rules" item waiting - one is enough
+static long long        dropped     = 0;         // event notifications dropped since the queue filled up
+
+int queueMax = 10000;                            // --queue-max: event notifications waiting, at most
+
+#define QUEUE_BYTES_MAX  (64LL * 1024 * 1024)    // their bodies, at most
 
 static CepRules*        rules      = NULL;       // the generation running
 static CepPatterns*     patterns   = NULL;       // its patterns' state - the host's clock
@@ -84,10 +94,21 @@ static Stats* statsList = NULL;
 
 // -----------------------------------------------------------------------------
 //
-// engineQueue -
+// engineQueue - an item for the engine
+//
+// Bounded: --queue-max event notifications, QUEUE_BYTES_MAX of their bodies. Full: the OLDEST event notifications
+// waiting are dropped to make room - an event handled late is worse than not handled (a light switched by a press
+// of a minute ago), the newest are what the home is now. Logged when the dropping starts, and how many once the
+// queue has drained to half. Never refused: a notification answered with an error makes the broker skip the
+// subscription's notifications for its endpoint's cooldown (NGSI-LD § 5.2.15 - coraine: 30 s by default).
+//
+// A "rules" notification (a reload) and the sender's "action" reports are never dropped; a reload already waiting
+// is not queued again.
 //
 void engineQueue(const char* which, const char* body, int bodyLen)
 {
+  bool event = (strcmp(which, "rules") != 0) && (strcmp(which, "action") != 0);
+
   Item* iP = malloc(sizeof(Item));
   if (iP == NULL)
     return;
@@ -102,15 +123,71 @@ void engineQueue(const char* which, const char* body, int bodyLen)
   }
   memcpy(iP->body, body, bodyLen);
   iP->body[bodyLen] = 0;
+  iP->bodyLen       = bodyLen;
+  iP->event         = event;
+
+  Item* droppedList = NULL;                      // freed after the lock
 
   pthread_mutex_lock(&queueMutex);
+
+  if ((event == false) && (strcmp(which, "rules") == 0) && rulesQueued)
+  {
+    pthread_mutex_unlock(&queueMutex);
+    free(iP->body);
+    free(iP);
+    return;
+  }
+
+  if (event)
+  {
+    Item** prevPP = &queueHead;
+    Item*  lastP  = NULL;                        // the item before *prevPP - the tail, if the last goes
+
+    while (((queueEvents >= queueMax) || (queueBytes + bodyLen > QUEUE_BYTES_MAX)) && (*prevPP != NULL))
+    {
+      Item* xP = *prevPP;
+
+      if (xP->event == false)
+      {
+        lastP  = xP;
+        prevPP = &xP->next;
+        continue;
+      }
+
+      *prevPP = xP->next;
+      if (queueTail == xP)
+        queueTail = lastP;
+      --queueEvents;
+      queueBytes -= xP->bodyLen;
+      if (dropped++ == 0)
+        logLine("the event queue is full (%d notifications) - the oldest dropped till it drains", queueMax);
+      xP->next    = droppedList;
+      droppedList = xP;
+    }
+  }
+
   if (queueTail == NULL)
     queueHead = iP;
   else
     queueTail->next = iP;
   queueTail = iP;
+  if (event)
+  {
+    ++queueEvents;
+    queueBytes += bodyLen;
+  }
+  else if (strcmp(which, "rules") == 0)
+    rulesQueued = true;
   pthread_cond_signal(&queueCond);
   pthread_mutex_unlock(&queueMutex);
+
+  while (droppedList != NULL)
+  {
+    Item* xP    = droppedList;
+    droppedList = xP->next;
+    free(xP->body);
+    free(xP);
+  }
 }
 
 
@@ -146,7 +223,24 @@ static Item* dequeue(long long ms)
   queueHead = iP->next;
   if (queueHead == NULL)
     queueTail = NULL;
+
+  long long droppedNow = 0;
+  if (iP->event)
+  {
+    --queueEvents;
+    queueBytes -= iP->bodyLen;
+    if ((dropped > 0) && (queueEvents <= queueMax / 2))   // half drained: the dropping is over
+    {
+      droppedNow = dropped;
+      dropped    = 0;
+    }
+  }
+  else if (strcmp(iP->which, "rules") == 0)
+    rulesQueued = false;
   pthread_mutex_unlock(&queueMutex);
+
+  if (droppedNow > 0)
+    logLine("the event queue has room again - %lld notification%s dropped while it was full", droppedNow, (droppedNow == 1) ? "" : "s");
 
   return iP;
 }

@@ -1,0 +1,103 @@
+#
+# FILE            cep_queue_bound.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# The engine's queue is bounded (--queue-max): full, the oldest event notifications waiting are dropped; corCep logs
+# when the dropping starts and, once the queue has drained to half, how many it dropped. Every notification is
+# answered 204: an error would make the broker skip the subscription for its cooldown (NGSI-LD § 5.2.15).
+#
+# A slow engine on purpose: a rule with an 'if' asks the broker on every fire, through ftFlakyBroker.py, whose GETs
+# are made 500 ms late.
+#
+--NAME--
+a full event queue (--queue-max) drops its oldest events, logged; the broker sees no failure, no cooldown
+
+--TAGS--
+cep queue
+
+--INIT--
+cepTestInit
+
+--RUN--
+FAIL="$CEP_TEST_DIR/fail"
+PLOG="$CEP_TEST_DIR/patches.log"
+PPORT=$((CEP_PORT + 5))
+rm -f "$FAIL" "$PLOG"
+flakyBrokerStart $PPORT "$FAIL" "$PLOG"
+SW=urn:ngsi-ld:WallSwitch:hall
+noTime() { sed 's/^[0-9:. -]*//'; }
+
+
+echo "01. A switch, an occupied building, a light, a rule 'if occupied' - corCep through the proxy, --queue-max 3"
+echo "========================================================================================================="
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"press\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Building:hq", "type": "Building", "occupied": {"type": "Property", "value": true}}'
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:hall", "type": "Light", "on": {"type": "Property", "value": false}}'
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:press\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"press\", \"if\": {\"entity\": \"urn:ngsi-ld:Building:hq\", \"q\": \"occupied==true\"}}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"urn:ngsi-ld:Light:hall\", \"set\": {\"on\": true}}]}}"
+CEP_BROKER_URL="http://127.0.0.1:$PPORT" cepStart --queue-max 3
+subsAwait 1 > /dev/null
+echo
+echo
+
+
+echo "02. The broker's GETs 500 ms late; 12 presses at once: the engine takes one, 3 wait, the older ones are dropped"
+echo "==============================================================================================================="
+echo "GET 500" > "$FAIL"
+for i in $(seq 12); do press $SW press; done
+cepAwaitLog "the event queue is full" 3 | noTime
+cepAwaitLog "has room again" 8 | noTime | sed 's/- [0-9]* notifications dropped/- N notifications dropped/'
+sleep 2.5                                        # the 3 waiting fire, 0.5 s each
+n=$(sed -n 's/.*again - \([0-9]*\) notifications\? dropped.*/\1/p' "$CEP_TEST_DIR/corCep.log")
+f=$(firedCount press)
+[ "$n" -ge 5 ] && echo "dropped: 5 or more - yes" || echo "dropped: $n"
+[ "$f" -ge 4 ] && [ "$f" -le 7 ] && echo "fired: 4 to 7 - yes" || echo "fired: $f"
+[ $((n + f)) -eq 12 ] && echo "dropped + fired: 12 - yes" || echo "dropped + fired: $((n + f))"
+curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/subscriptions/urn:ngsi-ld:Subscription:corcep-0" |
+  python3 -I -c 'import json, sys; n = json.load(sys.stdin)["notification"]; print("the broker: timesSent", n.get("timesSent"), "timesFailed", n.get("timesFailed", 0))'
+echo
+echo
+
+
+echo "03. The broker quick again: a press fires - at once, no cooldown"
+echo "================================================================"
+rm -f "$FAIL"
+sleep 1
+before=$(firedCount press)
+press $SW press
+firedAwait press $((before + 1)) > /dev/null && echo "fired again - yes"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+cepPidStop "$CEP_TEST_DIR/proxy.pid"
+
+--EXPECT--
+01. A switch, an occupied building, a light, a rule 'if occupied' - corCep through the proxy, --queue-max 3
+=========================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. The broker's GETs 500 ms late; 12 presses at once: the engine takes one, 3 wait, the older ones are dropped
+===============================================================================================================
+the event queue is full (3 notifications) - the oldest dropped till it drains
+the event queue has room again - N notifications dropped while it was full
+dropped: 5 or more - yes
+fired: 4 to 7 - yes
+dropped + fired: 12 - yes
+the broker: timesSent 12 timesFailed 0
+
+
+03. The broker quick again: a press fires - at once, no cooldown
+================================================================
+fired again - yes
+
+
