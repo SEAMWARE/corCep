@@ -50,6 +50,7 @@ static Item*            queueHead  = NULL;
 static Item*            queueTail  = NULL;
 
 static CepRules*        rules      = NULL;       // the generation running
+static CepPatterns*     patterns   = NULL;       // its patterns' state - the host's clock
 
 int statsInterval = 10;                          // --stats-interval
 int renewInterval = 3600;                        // --renew-interval
@@ -706,7 +707,7 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
     corTreeChildAdd(bodyP, atP);
   }
 
-  long long dropped = patternsDropped(sP->id);
+  long long dropped = patternsDropped(patterns, sP->id);
   if (dropped > 0)
   {
     CorNode* dP = corTreeObject(allocP, "droppedMatches");
@@ -717,7 +718,7 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
   }
   sP->droppedWritten = dropped;
 
-  long long droppedValues = patternsDroppedValues(sP->id);
+  long long droppedValues = patternsDroppedValues(patterns, sP->id);
   if (droppedValues > 0)
   {
     CorNode* dP = corTreeObject(allocP, "droppedValues");
@@ -761,7 +762,7 @@ static void statsFlush(CorAlloc* allocP)
 
   for (Stats* sP = statsList; sP != NULL; sP = sP->next)
   {
-    if ((patternsDropped(sP->id) != sP->droppedWritten) || (patternsDroppedValues(sP->id) != sP->droppedValuesWritten))
+    if ((patternsDropped(patterns, sP->id) != sP->droppedWritten) || (patternsDroppedValues(patterns, sP->id) != sP->droppedValuesWritten))
       sP->dirty = true;                          // a drop is news without a fire too
 
     if ((sP->dirty == true) && (sP->seen == true) && (now - sP->writtenAt >= statsInterval))
@@ -885,7 +886,7 @@ static void eventHandle(CorAlloc* allocP, int sub, char* body)
 
     if (number)
       v = (vP->type == CorInt) ? (double) vP->value.i : vP->value.f;
-    patternsEvent(rules, n, idP->value.s, number ? &v : NULL, nowMs(), fireCb, allocP);
+    patternsEvent(patterns, rules, n, idP->value.s, number ? &v : NULL, nowMs(), fireCb, allocP);
   }
 }
 
@@ -904,7 +905,7 @@ static void rulesReload(void)
   subsApply(newP);
   rulesFree(rules);
   rules = newP;
-  patternsAdopt(rules, nowMs());
+  patternsAdopt(patterns, rules, nowMs());
 
   Stepper** stepPP = &stepperList;                     // the steps of rules gone stop
   while (*stepPP != NULL)
@@ -964,6 +965,13 @@ void engineRun(void)
 
   corAllocBufferInit(&alloc, buf, sizeof(buf), 256 * 1024, NULL, "corCep event");
 
+  patterns = patternsNew(0);
+  if (patterns == NULL)
+  {
+    logLine("out of memory for the patterns' state");
+    exit(1);
+  }
+
   rulesReload();
 
   long long renewedAt = nowMs();
@@ -985,7 +993,7 @@ void engineRun(void)
         rulesReload();
     }
 
-    long long next = patternsTimers(rules, now, fireCb, &alloc);
+    long long next = patternsTimers(patterns, rules, now, fireCb, &alloc);
     long long step = steppersRun(&alloc, nowMs());
 
     if ((step != 0) && ((next == 0) || (step < next)))
