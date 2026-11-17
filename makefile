@@ -13,6 +13,7 @@
 #   make uninstall
 #   make clean
 #   make BUILD=debug EXTRA_CFLAGS=-fsanitize=address EXTRA_LDFLAGS=-fsanitize=address   (AddressSanitizer)
+#   make coverage        the functional tests on an instrumented corCep (obj/coverage/corCep): coverage/index.html
 #
 # Built on the cor-libs, as coraine is: SIBLING checkouts (../corRest, ../corJson, ...) built there,
 # `-I..` and the archives linked by path. COR_LIBS=<dir> for checkouts elsewhere.
@@ -25,6 +26,8 @@ BUILD      ?= release
 
 ifeq ($(BUILD),debug)
   OPT       = -g -O0
+else ifeq ($(BUILD),coverage)
+  OPT       = -g -O0 --coverage -fprofile-update=atomic   # atomic: no negative counts from the threads (GCC bug 68080)
 else
   OPT       = -O2
 endif
@@ -121,6 +124,37 @@ functest: corCep
 
 test: functest
 
+#
+# coverage - how much of corCep the functional tests run: corCep built with --coverage into obj/coverage (from
+# scratch: a stale .gcno of a source gone counts as never run), the suite run on THAT binary (CEP_BIN - ./corCep is
+# left as it is), then gcovr: a summary on the terminal, line by line in coverage/index.html.
+#
+# corCep's own src/ only. The cor-libs it links are not instrumented: they are sibling checkouts coraine builds
+# from too, and instrumenting them there would leave them -O0 --coverage for whatever is built next.
+# A corCep stopped with kill -9 (a test's crash) writes no counts: its lines count as run only if another one ran
+# them. The broker must be up: test/funcTests/broker.sh up (as for make functest).
+#
+# gcovr >= 8.3 (--gcov-ignore-parse-errors): GCOVR=<path> if it is not on PATH.
+#
+GCOVR        ?= $(shell command -v gcovr || echo $(HOME)/git/ngsi-ld-test-suite/.venv/bin/gcovr)
+
+coverage:
+	rm -rf obj/coverage coverage
+	$(MAKE) BUILD=coverage obj/coverage/corCep
+	CEP_BIN=$(CURDIR)/obj/coverage/corCep $(CORTEST) $(CORTEST_ARGS); echo $$? > obj/coverage/suite-status
+	mkdir -p coverage
+	$(GCOVR) --root . -f 'src/' --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
+	         --html-details coverage/index.html --html-title "corCep coverage" \
+	         --txt coverage/summary.txt --print-summary obj/coverage
+	@cat coverage/summary.txt
+	@echo ""
+	@echo "Coverage report: file://$(CURDIR)/coverage/index.html"
+	@status=$$(cat obj/coverage/suite-status); if [ "$$status" != 0 ]; then \
+	   echo "*** the suite FAILED (corTest exited $$status) - the report measures a suite that is not passing"; exit $$status; fi
+
+$(OBJDIR)/corCep: $(OBJECTS) $(COR_ARCHIVES)
+	$(CC) $(EXTRA_LDFLAGS) $(if $(filter coverage,$(BUILD)),--coverage) -o $@ $(OBJECTS) $(LIBS)
+
 install: corCep
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 755 corCep $(DESTDIR)$(PREFIX)/bin/corCep
@@ -129,8 +163,8 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/corCep
 
 clean:
-	rm -rf obj corCep
+	rm -rf obj corCep coverage
 
-.PHONY: all test functest install uninstall clean FORCE
+.PHONY: all test functest coverage install uninstall clean FORCE
 
 -include $(DEPS)
