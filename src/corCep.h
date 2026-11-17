@@ -60,9 +60,10 @@ extern void  brokerFailed(char* why, int whyLen, const char* what, CepResponse* 
 // The actions' PATCHes (sender.c) - a queue per target, a thread, retried for --retry-for
 //
 extern bool  senderStart(int retryForS);
-extern void  senderPatch(const char* ruleId, int action, const char* entity, const char* body);   // action 0: a step
-extern void  senderCreate(const char* ruleId, int action, const char* entity, const char* body);  // POST /entities
-extern void  senderDelete(const char* ruleId, int action, const char* entity);                    // DELETE /entities/<id>
+// author: the rule's signed 'author' (author.c), NULL: not checked - the PDP asked before each request goes out
+extern void  senderPatch(const char* ruleId, int action, const char* entity, const char* body, const char* author);   // action 0: a step
+extern void  senderCreate(const char* ruleId, int action, const char* entity, const char* body, const char* author);  // POST /entities
+extern void  senderDelete(const char* ruleId, int action, const char* entity, const char* author);                    // DELETE /entities/<id>
 extern int   senderDrain(long long ms);                                                          // at a stop; still waiting
 extern char* urlEncode(CorAlloc* allocP, const char* s);
 extern bool  nonexistentTenant(CepResponse* respP);
@@ -200,6 +201,7 @@ typedef struct CepRule
   char**          supersedeV;                    // the rules this one supersedes (their ids)
   int             supersedes;
   bool            partitioned;                   // every event a type selector: a match per entity (design § 3.1)
+  char*           author;                        // the rule's signed 'author' (author.c) - NULL: the rights not checked (no --pdp)
   char*           whenText;                      // 'when' as JSON text - a rule's state survives a reload if it is the same
   CepEvent*       declV;                         // every event 'when' declares - 'until' names one the pattern does not use
   int             decls;
@@ -301,7 +303,17 @@ extern bool                   stateSave(CepPatterns* psP);
 // /dry-run (dryrun.c) - rules replayed against made-up events; built with DRY_RUN=1 (the default)
 //
 struct CorHttpConn;
-extern bool dryRunInit(const char* jwks, const char* issuer, const char* audience, const char* rolesClaim, const char* editorRole, int refreshS, char* why, int whyLen);
+extern bool dryRunInit(const char* jwks, const char* issuer, const char* audience, const char* rolesClaim, const char* editorRole, char* why, int whyLen);
+
+//
+// The keys (keys.c) - --jwks and --author-jwks, one set; the author's rights (author.c) - --pdp
+//
+extern bool  keysInit(const char* jwks, const char* authorJwks, int refreshS, char* why, int whyLen);
+extern void  keysRefreshNow(void);
+extern bool  authorInit(const char* pdp, const char* issuer, char* why, int whyLen);
+extern bool  authorOn(void);
+extern bool  authorVerify(CorAlloc* allocP, const char* jws, CorNode* whenP, CorNode* thenP, char** tokenP, char* why, int whyLen);
+extern int   authorMay(CorAlloc* allocP, const char* token, const char* method, const char* path, const char* body, char* why, int whyLen);
 extern void dryRunRequest(struct CorHttpConn* connP);
 
 //

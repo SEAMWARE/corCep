@@ -1,0 +1,180 @@
+#
+# FILE            cep_author_rights.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# The author's rights (doc/design.md section 7, src/author.c): with --pdp, a rule runs only signed by the rule
+# editor ('author': a JWS over its when and then, by --author-issuer, a key of --author-jwks), and each request it
+# makes is asked of the policy decision point first - the author's signed statement as the bearer token. A no:
+# not sent, lastError says so - at once for a fixed target, when the rules are read. The PDP not answering: the
+# request waits, tried again. A stand-in PDP (tools/ftPdp.py) allows "<sub> <METHOD> <path prefix>" lines.
+#
+--NAME--
+The author's rights: signed rules only, every request asked of the PDP - a no not sent, a PDP down waited for
+
+--TAGS--
+cep author pdp
+
+--INIT--
+cepTestInit
+dryRunKeys > /dev/null
+python3 -I test/funcTests/tools/ftJwt.py key --out "$CEP_TEST_DIR" --name stranger --alg ES256
+
+--RUN--
+PDP_PORT=7631
+POLICY="$CEP_TEST_DIR/policy.txt"
+PDP_LOG="$CEP_TEST_DIR/pdp.log"
+L=/ngsi-ld/v1/entities/urn:ngsi-ld:Light
+S=urn:ngsi-ld:WallSwitch:s1
+sign() { python3 -I test/funcTests/tools/ftJwt.py sign --key "$CEP_TEST_DIR/${4:-k1}.pem" --alg ES256 --iss "${3:-http://editor.test}" \
+           --aud corCep --claims "{\"sub\": \"$1\", \"rule\": $2}"; }
+rule() {   # rule <name> <when> <then> [<author JWS>]
+  local author=""
+  [ -z "$4" ] || author=", \"author\": {\"type\": \"Property\", \"value\": \"$4\"}"
+  ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": $2},
+    \"then\": {\"type\": \"JsonProperty\", \"json\": $3}$author}"; }
+on() { for l in "$@"; do echo "$l: $(entityKv urn:ngsi-ld:Light:$l | python3 -I -c 'import json, sys; print(json.load(sys.stdin).get("on"))')"; done; }
+ruleErr() { curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/urn:ngsi-ld:Rule:$1?options=keyValues&pick=lastError" |
+            python3 -I -c 'import json, sys; print(json.load(sys.stdin).get("lastError", "-"))'; }
+WHEN="{\"entity\": \"$S\", \"attribute\": \"press\"}"
+THEN_A='[{"entity": "urn:ngsi-ld:Light:a", "set": {"on": true}}]'
+THEN_B='[{"entity": "urn:ngsi-ld:Light:b", "set": {"on": true}}]'
+THEN_G='[{"type": "Light", "q": "room==\"hall\"", "set": {"on": true}}]'
+THEN_D='[{"entity": "urn:ngsi-ld:Light:d", "set": {"on": true}}]'
+
+
+echo "01. Lights, a switch; alice may write Light:a and Light:c, bob nothing - seven rules, four not signed right"
+echo "======================================================================================================="
+for l in a b c d; do ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Light:$l\", \"type\": \"Light\", \"room\": {\"type\": \"Property\", \"value\": \"hall\"}, \"on\": {\"type\": \"Property\", \"value\": false}}"; done
+ngsildStatus POST /entities "{\"id\": \"$S\", \"type\": \"WallSwitch\", \"press\": {\"type\": \"Property\", \"value\": 0}}"
+printf 'alice PATCH %s:a/\nalice PATCH %s:c/\nalice PATCH %s:d/\n' $L $L $L > "$POLICY"
+pdpStart $PDP_PORT "$POLICY" "$PDP_LOG"
+rule alice    "$WHEN" "$THEN_A" "$(sign alice "{\"when\": $WHEN, \"then\": $THEN_A}")"
+rule bob      "$WHEN" "$THEN_B" "$(sign bob   "{\"when\": $WHEN, \"then\": $THEN_B}")"
+rule group    "$WHEN" "$THEN_G" "$(sign alice "{\"when\": $WHEN, \"then\": $THEN_G}")"
+rule unsigned "$WHEN" "$THEN_A"
+rule edited   "$WHEN" "$THEN_B" "$(sign alice "{\"when\": $WHEN, \"then\": $THEN_A}")"
+rule stranger "$WHEN" "$THEN_A" "$(sign alice "{\"when\": $WHEN, \"then\": $THEN_A}" http://editor.test stranger)"
+rule elsewhere "$WHEN" "$THEN_A" "$(sign alice "{\"when\": $WHEN, \"then\": $THEN_A}" http://other.test)"
+cepStart --stats-interval 0 --pdp "http://127.0.0.1:$PDP_PORT/v1/data/policy/main/allow" --author-jwks "$CEP_TEST_DIR/jwks.json" --author-issuer http://editor.test \
+         --jwks "$CEP_TEST_DIR/jwks.json" --issuer http://editor.test
+cepAwaitLog "the authors' rights checked" | sed 's|keys: /.*/jwks.json|keys: .../jwks.json|'
+grep -o "rule urn:ngsi-ld:Rule:.* left out: .*" "$CEP_TEST_DIR/corCep.log" | sort
+sleep 0.5
+echo "bob's rule, read: $(ruleErr bob)"
+echo
+echo
+
+
+echo "02. A press: alice's Light:a on; bob's Light:b not; alice's group: only a, c, d of the hall - not b"
+echo "==================================================================================================="
+attrSet $S press 1
+sleep 0.8
+on a b c d
+echo "bob:   $(ruleErr bob)"
+echo "group: $(ruleErr group)"
+echo
+echo
+
+
+echo "03. What the PDP was asked - once per request and rule (its signature): the second press from what was kept"
+echo "============================================================================================================"
+attrSet $S press 2
+sleep 0.8
+sort "$PDP_LOG" | uniq -c | sed 's/^ *//'
+echo
+echo
+
+
+echo "04. The PDP down; a rule for Light:d's level, a press - it waits for the PDP; the PDP back within --retry-for: written"
+echo "======================================================================================================================"
+THEN_L='[{"entity": "urn:ngsi-ld:Light:d", "set": {"level": 5}}]'
+cp "$POLICY" "$POLICY.ok"
+echo DOWN > "$POLICY"
+rule level "$WHEN" "$THEN_L" "$(sign alice "{\"when\": $WHEN, \"then\": $THEN_L}")"
+sleep 0.5
+attrSet $S press 3
+sleep 1
+echo "level: $(entityKv urn:ngsi-ld:Light:d | python3 -I -c 'import json, sys; print(json.load(sys.stdin).get("level"))')"
+cp "$POLICY.ok" "$POLICY"
+sleep 2
+echo "level: $(entityKv urn:ngsi-ld:Light:d | python3 -I -c 'import json, sys; print(json.load(sys.stdin).get("level"))')"
+grep "Light:d/attrs" "$PDP_LOG" | tail -1
+echo
+echo
+
+
+echo "05. A rule's signature is no token for /dry-run - not even with the editor's role in it"
+echo "========================================================================================="
+SIG=$(python3 -I test/funcTests/tools/ftJwt.py sign --key "$CEP_TEST_DIR/k1.pem" --alg ES256 --iss http://editor.test --aud corCep \
+        --claims "{\"sub\": \"alice\", \"realm_access\": {\"roles\": [\"ngsild-write\"]}, \"rule\": {\"when\": $WHEN, \"then\": $THEN_A}}")
+dryRunPost "$SIG" '{"rules": [], "events": []}'
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+cepPidStop "$CEP_TEST_DIR/pdp.pid"
+
+--EXPECT--
+01. Lights, a switch; alice may write Light:a and Light:c, bob nothing - seven rules, four not signed right
+=======================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+the authors' rights checked: http://127.0.0.1:7631/v1/data/policy/main/allow asked, rules signed by http://editor.test (keys: .../jwks.json)
+rule urn:ngsi-ld:Rule:edited left out: 'author' signs another rule - its "rule" is not this rule's when and then (edited after it was signed?)
+rule urn:ngsi-ld:Rule:elsewhere left out: 'author': wrong issuer
+rule urn:ngsi-ld:Rule:stranger left out: 'author': signed by an unknown key
+rule urn:ngsi-ld:Rule:unsigned left out: not signed - an 'author' (the rule editor's signature) is needed: --pdp is on
+bob's rule, read: action 1: PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:Light:b/attrs: the rule's author may not - the PDP says no
+
+
+02. A press: alice's Light:a on; bob's Light:b not; alice's group: only a, c, d of the hall - not b
+===================================================================================================
+a: True
+b: False
+c: True
+d: True
+bob:   action 1: PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:Light:b/attrs: the rule's author may not - the PDP says no
+group: action 1: PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:Light:b/attrs: the rule's author may not - the PDP says no
+
+
+03. What the PDP was asked - once per request and rule (its signature): the second press from what was kept
+============================================================================================================
+2 alice PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:Light:a/attrs yes
+1 alice PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:Light:b/attrs no
+1 alice PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:Light:c/attrs yes
+1 alice PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:Light:d/attrs yes
+1 bob PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:Light:b/attrs no
+
+
+04. The PDP down; a rule for Light:d's level, a press - it waits for the PDP; the PDP back within --retry-for: written
+======================================================================================================================
+POST /entities: 201
+level: None
+level: 5
+alice PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:Light:d/attrs yes
+
+
+05. A rule's signature is no token for /dry-run - not even with the editor's role in it
+=========================================================================================
+POST /dry-run: 401
+{
+  "detail": "the token: a rule's signature, not an access token",
+  "status": 401,
+  "title": "Unauthorized"
+}
+
+

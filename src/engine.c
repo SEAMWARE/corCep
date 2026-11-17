@@ -333,9 +333,19 @@ static CorNode* targetsGet(CorAlloc* allocP, CepAction* aP, bool values, char* w
 // attrsPatch - PATCH /entities/<id>/attrs with { <name>: <value> }, as a Property - queued, to the sender
 // (sender.c); a failure comes back later, an "action" item (actionReport)
 //
+static const char* authorOf(const char* ruleId)  // the running rule's signed 'author' - a step outlives a reload
+{
+  for (int ix = 0; (rules != NULL) && (ix < rules->rules); ix++)
+  {
+    if (strcmp(rules->ruleV[ix].id, ruleId) == 0)
+      return rules->ruleV[ix].author;
+  }
+  return authorOn() ? "" : NULL;                 // the rule gone: a token no PDP takes - fail closed
+}
+
 static void attrsPatch(CorAlloc* allocP, const char* ruleId, int action, const char* id, CorNode* bodyP)
 {
-  senderPatch(ruleId, action, id, jsonText(allocP, bodyP));
+  senderPatch(ruleId, action, id, jsonText(allocP, bodyP), authorOf(ruleId));
 }
 
 
@@ -632,7 +642,7 @@ static bool entityCreate(CorAlloc* allocP, CepRule* ruleP, int action, CepAction
       corTreeChildAdd(bodyP, property(allocP, vP->name, vP));
   }
 
-  senderCreate(ruleP->id, action, id, jsonText(allocP, bodyP));
+  senderCreate(ruleP->id, action, id, jsonText(allocP, bodyP), ruleP->author);
   return true;
 }
 
@@ -675,7 +685,7 @@ static bool actionRun(CorAlloc* allocP, CepRule* ruleP, int action, CepAction* a
 
     if (aP->kind == CepActionDelete)
     {
-      senderDelete(ruleP->id, action, idP->value.s);
+      senderDelete(ruleP->id, action, idP->value.s, ruleP->author);
       continue;
     }
 
@@ -1270,6 +1280,70 @@ static void steppersAdopt(void)
 
 // -----------------------------------------------------------------------------
 //
+// rightsCheck - the rules just read: each action on a fixed entity (a 'set', a 'toggle', a 'delete' - no ${...})
+// asked of the PDP as it will go out, so a rule's author learns at once, in lastError, of a target they may not
+// write (section 7: "when the rule is saved and again when it fires"). Groups, ${...} and creates: at fire time only
+//
+static void rightsCheck(void)
+{
+  CorAlloc alloc;
+  corAllocBufferInit(&alloc, NULL, 0, 16 * 1024, NULL, "corCep rights");
+
+  for (int rx = 0; rx < rules->rules; rx++)
+  {
+    CepRule* ruleP = &rules->ruleV[rx];
+
+    for (int ax = 0; (ruleP->author != NULL) && (ax < ruleP->actions); ax++)
+    {
+      CepAction*  aP     = &ruleP->actionV[ax];
+      const char* method = NULL;
+      char*       body   = NULL;
+      char        path[1100];
+      char        why[600];
+
+      if ((aP->entity == NULL) || aP->vars)
+        continue;
+
+      if (aP->kind == CepActionDelete)
+      {
+        method = "DELETE";
+        snprintf(path, sizeof(path), "/ngsi-ld/v1/entities/%s", aP->entity);   // decoded, as the PEP hands it over
+      }
+      else if ((aP->kind == CepActionSet) || (aP->kind == CepActionToggle))
+      {
+        CorNode* bodyP = corTreeObject(&alloc, NULL);
+
+        if (aP->kind == CepActionSet)
+        {
+          for (CorNode* vP = aP->set->value.head; vP != NULL; vP = vP->next)
+            corTreeChildAdd(bodyP, property(&alloc, vP->name, vP));
+        }
+        else                                     // a toggle as it turns the attribute on
+          corTreeChildAdd(bodyP, property(&alloc, aP->attribute, corTreeBoolean(&alloc, aP->attribute, true)));
+
+        method = "PATCH";
+        body   = jsonText(&alloc, bodyP);
+        snprintf(path, sizeof(path), "/ngsi-ld/v1/entities/%s/attrs", aP->entity);
+      }
+      else
+        continue;
+
+      if (authorMay(&alloc, ruleP->author, method, path, body, why, sizeof(why)) == 0)
+      {
+        char text[1024];
+        int  len = snprintf(text, sizeof(text), "%s\n%d\n0\n%s", ruleP->id, ax + 1, why);
+        engineQueue("action", text, (len < (int) sizeof(text)) ? len : (int) sizeof(text) - 1);   // lastError, once the rule's stats are there
+      }
+    }
+  }
+
+  corAllocBufferReset(&alloc, false);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // rulesReload - a new generation; the old one stays if the broker did not answer
 //
 static void rulesReload(void)
@@ -1304,6 +1378,9 @@ static void rulesReload(void)
   }
 
   steppersAdopt();
+
+  if (authorOn())
+    rightsCheck();
 
   //
   // The statistics of the rules running; those of a rule gone (deleted, disabled, left out) are dropped

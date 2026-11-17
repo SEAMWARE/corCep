@@ -9,6 +9,7 @@
 //   corCep --broker http://host:port [--port 7602] [--notify-url http://host:7602] [--tenant T]
 //          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S] [--renew-interval PT1H] [--retry-for PT30S] [--queue-max N]
 //          [--state FILE] [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
+//          [--pdp URL --author-jwks URL|FILE --author-issuer ISS]
 //
 #include <stdarg.h>                              // va_list
 #include <stdio.h>                               // fprintf, vfprintf
@@ -48,6 +49,9 @@ static char* audienceArg  = NULL;
 static char* rolesClaimArg = NULL;
 static char* editorRoleArg = NULL;
 static int   jwksRefreshArg = 300;
+static char* pdpArg        = NULL;
+static char* authorJwksArg = NULL;
+static char* authorIssuerArg = NULL;
 static char* stateArg     = NULL;
 static int   retryForArg  = 30;
 
@@ -79,6 +83,9 @@ static CorArg options[] =
   { "--roles-claim", "-rc", CorArgString, &rolesClaimArg, CorArgOpt, _vp "realm_access.roles", NULL, NULL, "with --jwks: the claim holding the roles - a path, dot-separated; an array of strings, or a string of them, space-separated" },
   { "--editor-role", "-er", CorArgString, &editorRoleArg, CorArgOpt, _vp "ngsild-write", NULL, NULL, "with --jwks: the role a token needs for /dry-run" },
   { "--jwks-refresh", "-jr", CorArgDuration, &jwksRefreshArg, CorArgOpt, _vp 300, _vp 1, _vp 86400, "with --jwks: how often the keys are fetched again - seconds or ISO 8601 (PT5M); at once too when a token names a key not in the set" },
+  { "--pdp",        "-pd", CorArgString, &pdpArg,       CorArgOpt, NULL,      NULL,  NULL,        "the policy decision point asked whether a rule's author may make each request (OPA's data API: http://opa:8181/v1/data/policy/main/allow) - the author's rights checked; needs --author-jwks and --author-issuer" },
+  { "--author-jwks", "-aj", CorArgString, &authorJwksArg, CorArgOpt, NULL,     NULL,  NULL,        "with --pdp: the JWK Set (a URL or a file) the rule editor signs the rules' 'author' with" },
+  { "--author-issuer", "-ai", CorArgString, &authorIssuerArg, CorArgOpt, NULL, NULL,  NULL,        "with --pdp: the iss a rule's 'author' must have - the rule editor's" },
   CORARGS_END
 };
 
@@ -226,19 +233,45 @@ int main(int argC, char* argV[])
     return 1;
   }
 
+  //
+  // The keys: --jwks (/dry-run) and --author-jwks (the rules' signatures) - one set, refreshed together
+  //
+  bool pdpOn = (pdpArg != NULL) && (pdpArg[0] != 0);
+  if (pdpOn != ((authorJwksArg != NULL) && (authorJwksArg[0] != 0)))
+  {
+    fprintf(stderr, "corCep: --pdp and --author-jwks go together (and --author-issuer)\n");
+    return 1;
+  }
+  if (authorInit(pdpArg, authorIssuerArg, why, sizeof(why)) == false)
+  {
+    fprintf(stderr, "corCep: %s\n", why);
+    return 1;
+  }
+
+#if CEP_WITH_DRY_RUN == 0
   if ((jwksArg != NULL) && (jwksArg[0] != 0))
   {
-#if CEP_WITH_DRY_RUN
-    if (dryRunInit(jwksArg, issuerArg, audienceArg, rolesClaimArg, editorRoleArg, jwksRefreshArg, why, sizeof(why)) == false)
-    {
-      fprintf(stderr, "corCep: %s\n", why);
-      return 1;
-    }
-#else
     fprintf(stderr, "corCep: --jwks - this corCep is built without /dry-run (DRY_RUN=0)\n");
     return 1;
-#endif
   }
+#endif
+
+  if (keysInit(jwksArg, authorJwksArg, jwksRefreshArg, why, sizeof(why)) == false)
+  {
+    fprintf(stderr, "corCep: %s\n", why);
+    return 1;
+  }
+
+#if CEP_WITH_DRY_RUN
+  if ((jwksArg != NULL) && (jwksArg[0] != 0) && (dryRunInit(jwksArg, issuerArg, audienceArg, rolesClaimArg, editorRoleArg, why, sizeof(why)) == false))
+  {
+    fprintf(stderr, "corCep: %s\n", why);
+    return 1;
+  }
+#endif
+
+  if (pdpOn)
+    logLine("the authors' rights checked: %s asked, rules signed by %s (keys: %s)", pdpArg, authorIssuerArg, authorJwksArg);
 
   if ((stateArg != NULL) && (stateArg[0] != 0))
     stateFile = stateArg;

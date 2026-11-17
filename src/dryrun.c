@@ -72,60 +72,6 @@ static const char*      issuer      = NULL;
 static const char*      audience    = NULL;
 static const char*      rolesClaim  = NULL;
 static const char*      editorRole  = NULL;
-static int              refreshS    = 300;
-
-static pthread_mutex_t  refreshMutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t   refreshCond  = PTHREAD_COND_INITIALIZER;
-static bool             refreshNow   = false;
-
-
-
-// -----------------------------------------------------------------------------
-//
-// keysFetch - the JWK Set fetched and installed; false: not (the keys in use stay) - why says why
-//
-static bool keysFetch(char* why, int whyLen)
-{
-  CorAlloc alloc;
-  corAllocBufferInit(&alloc, NULL, 0, 64 * 1024, NULL, "corCep jwks");
-
-  char* text = corRestFetch(jwks, &alloc, why, whyLen);
-  bool  ok   = (text != NULL) && corRestJwkLoad(text, NULL, why, whyLen);
-
-  corAllocBufferReset(&alloc, false);
-  return ok;
-}
-
-
-
-// -----------------------------------------------------------------------------
-//
-// refresher - the keys fetched again every --jwks-refresh, and at once when a token names a key not in the set
-// (the issuer rotated its keys)
-//
-static void* refresher(void* argP)
-{
-  (void) argP;
-
-  while (true)
-  {
-    struct timespec until;
-    clock_gettime(CLOCK_REALTIME, &until);
-    until.tv_sec += refreshS;
-
-    pthread_mutex_lock(&refreshMutex);
-    while ((refreshNow == false) && (pthread_cond_timedwait(&refreshCond, &refreshMutex, &until) == 0))
-      ;
-    refreshNow = false;
-    pthread_mutex_unlock(&refreshMutex);
-
-    char why[256];
-    if (keysFetch(why, sizeof(why)) == false)
-      logLine("/dry-run: the keys (%s) not fetched again - the ones in use kept: %s", jwks, why);
-  }
-
-  return NULL;
-}
 
 
 
@@ -134,35 +80,19 @@ static void* refresher(void* argP)
 // dryRunInit - /dry-run on, its keys fetched: false (why says why) if they cannot be - corCep does not start
 //
 bool dryRunInit(const char* jwksArg, const char* issuerArg, const char* audienceArg, const char* rolesClaimArg,
-                const char* editorRoleArg, int refreshArg, char* why, int whyLen)
+                const char* editorRoleArg, char* why, int whyLen)
 {
   jwks       = jwksArg;
   issuer     = ((issuerArg   != NULL) && (issuerArg[0]   != 0)) ? issuerArg   : NULL;
   audience   = ((audienceArg != NULL) && (audienceArg[0] != 0)) ? audienceArg : NULL;
   rolesClaim = rolesClaimArg;
   editorRole = editorRoleArg;
-  refreshS   = refreshArg;
 
   if ((rolesClaim == NULL) || (rolesClaim[0] == 0) || (editorRole == NULL) || (editorRole[0] == 0))
   {
     snprintf(why, whyLen, "--roles-claim and --editor-role: neither may be empty");
     return false;
   }
-
-  char fetchWhy[256];
-  if (keysFetch(fetchWhy, sizeof(fetchWhy)) == false)
-  {
-    snprintf(why, whyLen, "--jwks %s: %s", jwks, fetchWhy);
-    return false;
-  }
-
-  pthread_t tid;
-  if (pthread_create(&tid, NULL, refresher, NULL) != 0)
-  {
-    snprintf(why, whyLen, "--jwks: no thread for the key refresh");
-    return false;
-  }
-  pthread_detach(tid);
 
   logLine("/dry-run on: %d key%s from %s, role '%s' in '%s'", corRestJwkCount(), (corRestJwkCount() == 1) ? "" : "s",
           jwks, editorRole, rolesClaim);
@@ -287,13 +217,14 @@ static int tokenCheck(CorHttpConn* connP, char* detail, int detailLen)
   if (check != CorRestJwtOk)
   {
     if (check == CorRestJwtUnknownKey)
-    {
-      pthread_mutex_lock(&refreshMutex);
-      refreshNow = true;
-      pthread_cond_signal(&refreshCond);
-      pthread_mutex_unlock(&refreshMutex);
-    }
+      keysRefreshNow();
     snprintf(detail, detailLen, "the token: %s", corRestJwtCheckString(check));
+    return 401;
+  }
+
+  if (corTreeLookup(claimsP, "rule") != NULL)    // a rule's signature (author.c) - not a token for /dry-run
+  {
+    snprintf(detail, detailLen, "the token: a rule's signature, not an access token");
     return 401;
   }
 

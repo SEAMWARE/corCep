@@ -48,6 +48,7 @@ typedef struct Patch
   int            action;                         // 1..: the rule's action; 0: a step
   CorRestVerb    verb;                           // PATCH (attributes), POST (create), DELETE
   char*          body;                           // JSON text; NULL: none (DELETE)
+  char*          author;                         // the rule's signed 'author' - NULL: the author's rights not checked
   long long      madeAt;                         // nowMs()
 } Patch;
 
@@ -88,6 +89,7 @@ static void patchFree(Patch* pP)
 {
   free(pP->ruleId);
   free(pP->body);
+  free(pP->author);
   free(pP);
 }
 
@@ -124,11 +126,12 @@ static const char* verbName(CorRestVerb verb)
 //
 // enqueue - a request on <entity>, at the end of its queue
 //
-static void enqueue(const char* ruleId, int action, const char* entity, CorRestVerb verb, const char* body)
+static void enqueue(const char* ruleId, int action, const char* entity, CorRestVerb verb, const char* body, const char* author)
 {
   Patch* pP = calloc(1, sizeof(Patch));
 
-  if ((pP == NULL) || ((pP->ruleId = strdup(ruleId)) == NULL) || ((body != NULL) && ((pP->body = strdup(body)) == NULL)))
+  if ((pP == NULL) || ((pP->ruleId = strdup(ruleId)) == NULL) || ((body != NULL) && ((pP->body = strdup(body)) == NULL)) ||
+      ((author != NULL) && ((pP->author = strdup(author)) == NULL)))
   {
     if (pP != NULL)
       patchFree(pP);
@@ -211,19 +214,19 @@ static void enqueue(const char* ruleId, int action, const char* entity, CorRestV
 // entity, POST /entities), <entity> deleted - each at the end of <entity>'s queue: a create, a PATCH, a delete of
 // one entity go out in the order they were made
 //
-void senderPatch(const char* ruleId, int action, const char* entity, const char* body)
+void senderPatch(const char* ruleId, int action, const char* entity, const char* body, const char* author)
 {
-  enqueue(ruleId, action, entity, CorVerbPatch, body);
+  enqueue(ruleId, action, entity, CorVerbPatch, body, author);
 }
 
-void senderCreate(const char* ruleId, int action, const char* entity, const char* body)
+void senderCreate(const char* ruleId, int action, const char* entity, const char* body, const char* author)
 {
-  enqueue(ruleId, action, entity, CorVerbPost, body);
+  enqueue(ruleId, action, entity, CorVerbPost, body, author);
 }
 
-void senderDelete(const char* ruleId, int action, const char* entity)
+void senderDelete(const char* ruleId, int action, const char* entity, const char* author)
 {
-  enqueue(ruleId, action, entity, CorVerbDelete, NULL);
+  enqueue(ruleId, action, entity, CorVerbDelete, NULL, author);
 }
 
 
@@ -313,7 +316,7 @@ static void* senderThread(void* arg)
     pthread_mutex_unlock(&mutex);
 
     char        path[1024];
-    CepResponse resp;
+    CepResponse resp = { 0 };
 
     if (pP->verb == CorVerbPost)
       snprintf(path, sizeof(path), "/entities");
@@ -322,12 +325,32 @@ static void* senderThread(void* arg)
     else
       snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(&alloc, id));
 
-    bool answered = brokerRequestText(&alloc, pP->verb, path, NULL, pP->body, &resp);
+    //
+    // The author's rights (author.c): the PDP asked first - a no is final, no answer is tried again, as the broker's
+    //
+    char why[600] = { 0 };
+    int  may      = 1;
+
+    if (pP->author != NULL)
+    {
+      char ldPath[1100];                         // as the PEP hands it over: decoded (APISIX's uri)
+
+      if (pP->verb == CorVerbPost)
+        snprintf(ldPath, sizeof(ldPath), "/ngsi-ld/v1/entities");
+      else
+        snprintf(ldPath, sizeof(ldPath), "/ngsi-ld/v1/entities/%s%s", id, (pP->verb == CorVerbDelete) ? "" : "/attrs");
+      may = authorMay(&alloc, pP->author, verbName(pP->verb), ldPath, pP->body, why, sizeof(why));
+    }
+
+    bool answered = (may == 1) && brokerRequestText(&alloc, pP->verb, path, NULL, pP->body, &resp);
     bool done     = answered && ((resp.status == 204) || ((pP->verb == CorVerbPost) && (resp.status == 201)) ||
                                  ((pP->verb == CorVerbDelete) && (resp.status == 404)));   // gone already: what was asked
-    char why[600] = { 0 };
 
-    if (done == false)
+    if (may == 0)
+      resp.status = 403;                         // final: not retriable
+    else if (may == -1)
+      resp.status = 0;                           // no answer: retriable
+    else if (done == false)
     {
       char what[512];
       snprintf(what, sizeof(what), "%s %s", verbName(pP->verb), id);
@@ -339,7 +362,7 @@ static void* senderThread(void* arg)
     tP->sending = false;
     now         = nowMs();
 
-    bool retry = (done == false) && retriable(answered, resp.status);
+    bool retry = (done == false) && (may != 0) && retriable(answered, resp.status);   // a no from the PDP is final
     if (retry)
     {
       long long backoff = (tP->backoffMs == 0) ? BACKOFF_FIRST : tP->backoffMs;

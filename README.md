@@ -54,7 +54,10 @@ corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant
 | `--audience`, `-au` | with `--jwks`: an `aud` a token must have (default: not checked) |
 | `--roles-claim`, `-rc` | with `--jwks`: the claim holding the roles - a path, dot-separated (default `realm_access.roles`, Keycloak's); an array of strings, or one string of them, space-separated |
 | `--editor-role`, `-er` | with `--jwks`: the role a token needs for `/dry-run` (default `ngsild-write`) |
-| `--jwks-refresh`, `-jr` | with `--jwks`: how often the keys are fetched again - seconds or ISO 8601 (default `PT5M`, up to `P1D`); at once too when a token names a key not in the set |
+| `--jwks-refresh`, `-jr` | with `--jwks` or `--author-jwks`: how often the keys are fetched again - seconds or ISO 8601 (default `PT5M`, up to `P1D`); at once too when a token names a key not in the set |
+| `--pdp`, `-pd` | the policy decision point asked whether a rule's author may make each request - OPA's data API, e.g. `http://opa:8181/v1/data/policy/main/allow`. Turns the author's rights on: see [The author's rights](#the-authors-rights). Needs `--author-jwks` and `--author-issuer` |
+| `--author-jwks`, `-aj` | with `--pdp`: the JWK Set (a URL or a file) the rule editor signs the rules' `author` with |
+| `--author-issuer`, `-ai` | with `--pdp`: the `iss` a rule's `author` must have - the rule editor's |
 
 The options can also come from the environment: `CORCEP_BROKER`, `CORCEP_PORT`, ...
 
@@ -388,6 +391,54 @@ Without `--broker-cert`, an `https://` broker's certificate is checked against t
 
 The test `cep_broker_auth` runs both against a broker of its own (HTTPS, OIDC with a JWK Set file - `broker.sh up` starts it).
 
+## The author's rights
+
+A rule acts with corCep's identity, but with `--pdp` only where its **author** may act - in a data space
+connector, what the author's own requests to the broker would be allowed. Off without `--pdp`.
+
+**Who the author is.** The rule editor signs each rule it saves: an `author` Property, a JWS (RS256 or ES256) by
+`--author-issuer`, signed by a key of `--author-jwks`, whose payload holds the author's identity as the editor
+knows it (in a data space connector: the author's `verifiableCredential`) and the rule itself:
+
+```json
+{ "iss": "https://editor.example", "sub": "alice", "verifiableCredential": { ... },
+  "rule": { "when": { ... }, "then": [ ... ] } }
+```
+
+With `--pdp`, a rule is left out (with the reason) when it has no `author`, the signature or issuer is not right,
+or `"rule"` is not its `when` and `then` - a rule changed without the editor does not run. Compared as JSON:
+member order and number form (`1` / `1.0`) do not matter. An `exp`, if the signature has one, is checked when the
+rules are read. corCep never holds the author's access token.
+
+**What the author may.** Before each request corCep makes for a rule - a `set`, `toggle`, `step`, `create`,
+`delete`, each member of a group - it asks the PDP, as APISIX's `opa` plugin asks OPA:
+
+```json
+{ "input": { "type": "http",
+             "request": { "method": "PATCH", "path": "/ngsi-ld/v1/entities/urn:ngsi-ld:Light:a/attrs",
+                          "headers": { "authorization": "Bearer <the rule's author>", "content-type": "application/json" },
+                          "query": {}, "body": "{\"on\":{\"type\":\"Property\",\"value\":true}}" } } }
+```
+
+`{ "result": true }` lets it go out; anything else - `false`, no result (OPA's undefined) - does not: the action
+fails, the rule's `lastError` says so. A data space connector's policies (odrl-pap's Rego) decode the token's
+payload without checking its signature (the PEP did; here corCep did), so the policies written for the author's
+own requests decide the rule's.
+
+- **When the rules are read**, each action on a fixed entity (`set`, `toggle`, `delete`, no `${...}`) is asked
+  at once: a no is in `lastError` before the rule ever fires. A `toggle` is asked as it turns on.
+- **A decision is kept a minute** - the same request, the same rule (its signature). A policy change takes up to
+  a minute to reach a rule.
+- **The PDP not answering** (no answer, not a 200): the request waits and is tried again as a broker failure is
+  (`--retry-for`), then dropped - never sent unchecked.
+- The path is the decoded one (`urn:ngsi-ld:...`, as APISIX's `uri`), with the broker's `/ngsi-ld/v1`.
+- With `--broker-cert`, the PDP is reached over plain HTTP (it is pinned to the broker's certificate) - an OPA
+  beside corCep.
+- A rule's signature is no token for `/dry-run` (a 401), even with the editor's role in it; `/dry-run` does not
+  ask the PDP.
+
+The test `cep_author_rights` runs it, against a stand-in PDP (`test/funcTests/tools/ftPdp.py`).
+
 ## Values from the match
 
 An action's target, q and values may name the match:
@@ -620,6 +671,7 @@ too (`test/funcTests/broker.sh up`), and makes its certificates, signing key, JW
 | `cep_action_retry` | a PATCH answered 503 retried, and the one after it on the same entity waits - in order; another entity's goes at once; no answer for longer than `--retry-for`: dropped, `droppedActions`, `lastError`; a 404 not retried |
 | `cep_queue_bound` | a full event queue drops its oldest notifications, logged; all answered 204 - the broker counts no failure, no cooldown follows |
 | `cep_action_create_delete` | `create` with an id made each time, and with one given (twice: 409, `lastError`); `delete` of a group, of one id (twice: no error); create, set, delete of one entity in one rule - in order |
+| `cep_author_rights` | `--pdp`: unsigned, edited, foreign-key and wrong-issuer rules left out; a denied fixed target in `lastError` when read; a group written only where allowed; decisions kept; the PDP down - waited for, then written; a rule's signature refused by `/dry-run` |
 | `cep_action_vars` | `${entity}`, `${<event>.entity}`, `${<event>.value}` (typed, and as text), a window's `${t.avg}`, a q made from an event; a quote into the q and a space into an id refused; bad names left out; `/dry-run` resolves them |
 | `cep_state` | `--state`: a match half done, a window, an absence's deadline and a step over a stop and a crash; a deadline passed while down starts again; a file that is not a state |
 | `cep_rule_stats` | `fired`, `firedAt`, `lastError` on the Rule entity; no reload from them; the count survives a restart |
