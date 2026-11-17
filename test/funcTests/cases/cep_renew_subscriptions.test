@@ -57,7 +57,7 @@ echo "01. Two homes, each a switch, a light and a rule; a corCep each - one rene
 echo "===================================================================================================="
 home "$T1"
 home "$T2"
-cep 1 "$T1" "$CEP_PORT"             --renew-interval 3
+cep 1 "$T1" "$CEP_PORT"             --renew-interval PT3S
 cep 2 "$T2" "$((CEP_PORT + 1))"     --renew-interval 0
 echo
 echo
@@ -77,10 +77,10 @@ echo
 echo
 
 
-echo "03. A day, a year: taken (the hub renews daily); more than a year: refused"
-echo "=========================================================================="
-for v in 86400 31536000 31536001; do
-  if "$CEP_BIN" --broker http://127.0.0.1:1 --port "$((CEP_PORT + 2))" --renew-interval "$v" 2>&1 | grep -q "exceeds its upper limit"; then
+echo "03. A day, a year: taken (the hub renews daily) - as seconds and as ISO 8601; more than a year: refused"
+echo "========================================================================================================"
+for v in 86400 P1D 31536000 P365D 31536001 P366D P1M; do
+  if "$CEP_BIN" --broker http://127.0.0.1:1 --port "$((CEP_PORT + 2))" --renew-interval "$v" 2>&1 | grep -qE "exceeds its upper limit|invalid value"; then
     echo "$v: refused"
   else
     echo "$v: taken"
@@ -118,10 +118,14 @@ never:    0 fired
 renewals refused: 0
 
 
-03. A day, a year: taken (the hub renews daily); more than a year: refused
-==========================================================================
+03. A day, a year: taken (the hub renews daily) - as seconds and as ISO 8601; more than a year: refused
+========================================================================================================
 86400: taken
+P1D: taken
 31536000: taken
+P365D: taken
 31536001: refused
+P366D: refused
+P1M: refused
 
 
