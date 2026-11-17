@@ -61,6 +61,8 @@ extern void  brokerFailed(char* why, int whyLen, const char* what, CepResponse* 
 //
 extern bool  senderStart(int retryForS);
 extern void  senderPatch(const char* ruleId, int action, const char* entity, const char* body);   // action 0: a step
+extern void  senderCreate(const char* ruleId, int action, const char* entity, const char* body);  // POST /entities
+extern void  senderDelete(const char* ruleId, int action, const char* entity);                    // DELETE /entities/<id>
 extern int   senderDrain(long long ms);                                                          // at a stop; still waiting
 extern char* urlEncode(CorAlloc* allocP, const char* s);
 extern bool  nonexistentTenant(CepResponse* respP);
@@ -75,7 +77,9 @@ typedef enum CepActionKind
 {
   CepActionSet,
   CepActionToggle,
-  CepActionStep
+  CepActionStep,
+  CepActionCreate,                               // POST /entities - 'create': an entity, set style
+  CepActionDelete                                // DELETE /entities/<id> - the target, one or a group
 } CepActionKind;
 
 typedef struct CepAction
@@ -84,7 +88,7 @@ typedef struct CepAction
   char*          entity;                         // the target: one entity ...
   char*          type;                           // ... or every entity of a type
   char*          q;                              //     that matches q (NULL: all of them)
-  CorNode*       set;                            // Set: { attribute: value, ... }
+  CorNode*       set;                            // Set: { attribute: value, ... }; Create: the entity { id?, type, attribute: value, ... }
   char*          attribute;                      // Toggle: the boolean attribute; Step: the number
   double         by;                             // Step: added every 'every'
   double         min, max;                       // Step: the bounds - stepping stops at one

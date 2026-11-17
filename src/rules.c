@@ -744,6 +744,46 @@ static int untilOf(CorAlloc* allocP, CepRule* ruleP, const char* name, char* why
 
 // -----------------------------------------------------------------------------
 //
+// createParse - { "create": { "id"?, "type", "<attribute>": <value>, ... } } - no target besides
+//
+static bool createParse(CorAlloc* allocP, CorNode* aP, CorNode* createP, CepAction* actP, char* why, int whyLen)
+{
+  if ((corTreeLookup(aP, "entity") != NULL) || (corTreeLookup(aP, "type") != NULL) || (corTreeLookup(aP, "q") != NULL) || (corTreeLookup(aP, "until") != NULL))
+  {
+    snprintf(why, whyLen, "'create' makes its entity - no 'entity', 'type', 'q', 'until' besides (the type goes inside)");
+    return false;
+  }
+  if (createP->type != CorObject)
+  {
+    snprintf(why, whyLen, "'create' - an object: the entity, \"type\" and its attributes' values");
+    return false;
+  }
+
+  CorNode* idP   = corTreeLookup(createP, "id");
+  CorNode* typeP = corTreeLookup(createP, "type");
+
+  if ((typeP == NULL) || (typeP->type != CorString) || (typeP->value.s[0] == 0))
+  {
+    snprintf(why, whyLen, "'create' - the entity needs a \"type\", a string");
+    return false;
+  }
+  if ((idP != NULL) && ((idP->type != CorString) || (strchr(idP->value.s, ':') == NULL)))
+  {
+    snprintf(why, whyLen, "'create' - \"id\" is a URI (urn:ngsi-ld:...); leave it out and corCep makes one each time");
+    return false;
+  }
+
+  actP->kind  = CepActionCreate;
+  actP->set   = createP;                         // lives in the generation's allocator
+  actP->until = -1;
+  (void) allocP;
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // actionParse - one of `then`. The target: "entity": <id>, or "type": <type> with an optional "q" - every entity
 // of the type that matches. What is done, one of:
 //
@@ -751,6 +791,14 @@ static int untilOf(CorAlloc* allocP, CepRule* ruleP, const char* name, char* why
 //   "toggle": "<attribute>"                            a boolean: read, the other value PATCHed
 //   "step":   { "attribute", "by", "every", "min", "max", "for" }, "until": "<event>"
 //             a number: 'by' added every 'every' - until the event, a bound, or 'for' (default PT30S)
+//   "delete": true                                     the target deleted - one entity, or the group
+//   "delete": "<id>"                                   the same, "entity" written in it
+//
+// And one without a target - it makes it:
+//
+//   "create": { "id"?, "type", "<attribute>": <value>, ... }
+//             POST /entities, the values as Properties; no "id": corCep makes one each time -
+//             urn:ngsi-ld:<type>:<rule's last part>-<ms>-<n>
 //
 static bool actionParse(CorAlloc* allocP, CepRule* ruleP, CorNode* aP, CepAction* actP, char* why, int whyLen)
 {
@@ -767,6 +815,32 @@ static bool actionParse(CorAlloc* allocP, CepRule* ruleP, CorNode* aP, CepAction
   char*    toggle = str(aP, "toggle");
   CorNode* stepP  = corTreeLookup(aP, "step");
   char*    until  = str(aP, "until");
+  CorNode* createP = corTreeLookup(aP, "create");
+  CorNode* deleteP = corTreeLookup(aP, "delete");
+
+  if ((setP != NULL) + (toggle != NULL) + (stepP != NULL) + (createP != NULL) + (deleteP != NULL) != 1)
+  {
+    snprintf(why, whyLen, "an action is one of 'set', 'toggle', 'step', 'create' and 'delete'");
+    return false;
+  }
+
+  if (createP != NULL)
+    return createParse(allocP, aP, createP, actP, why, whyLen);
+
+  if ((deleteP != NULL) && (deleteP->type == CorString))       // { "delete": "<id>" } - the id is the target
+  {
+    if ((entity != NULL) || (type != NULL) || (q != NULL))
+    {
+      snprintf(why, whyLen, "'delete': \"<id>\" names its target - no 'entity', 'type', 'q' besides");
+      return false;
+    }
+    entity = deleteP->value.s;
+  }
+  else if ((deleteP != NULL) && ((deleteP->type != CorBoolean) || (deleteP->value.b == false)))
+  {
+    snprintf(why, whyLen, "'delete' - true (the target: 'entity', or 'type' and 'q'), or an entity id");
+    return false;
+  }
 
   if ((entity == NULL) == (type == NULL))
   {
@@ -776,11 +850,6 @@ static bool actionParse(CorAlloc* allocP, CepRule* ruleP, CorNode* aP, CepAction
   if ((q != NULL) && (type == NULL))
   {
     snprintf(why, whyLen, "an action's 'q' - with 'type' only");
-    return false;
-  }
-  if ((setP != NULL) + (toggle != NULL) + (stepP != NULL) != 1)
-  {
-    snprintf(why, whyLen, "an action is one of 'set', 'toggle' and 'step'");
     return false;
   }
   if ((until != NULL) && (stepP == NULL))
@@ -793,6 +862,12 @@ static bool actionParse(CorAlloc* allocP, CepRule* ruleP, CorNode* aP, CepAction
   actP->type   = (type   != NULL) ? corAllocStrdup(allocP, type)   : NULL;
   actP->q      = (q      != NULL) ? corAllocStrdup(allocP, q)      : NULL;
   actP->until  = -1;
+
+  if (deleteP != NULL)
+  {
+    actP->kind = CepActionDelete;
+    return true;
+  }
 
   if (setP != NULL)
   {

@@ -4,14 +4,14 @@
 // Copyright 2026 Seamware
 // SPDX-License-Identifier: Apache-2.0
 //
-// The actions' PATCHes - sent by a thread of their own, off the engine's: a broker slow or away no longer holds up
-// the patterns (doc/design.md § 5, § 6).
+// The actions' requests - PATCHes of attributes, entities created (POST) and deleted - sent by a thread of their
+// own, off the engine's: a broker slow or away no longer holds up the patterns (doc/design.md § 5, § 6).
 //
 // - A queue per target entity: two actions on one light go out in the order they were made, never reordered - the
 //   next one waits for the one before to be done.
 // - Retried with back-off (0.25 s, doubled, 5 s at most) for --retry-for (default 30 s) when the broker did not
 //   answer, or answered 408, 429, 5xx; then dropped - a light switched minutes late is worse than not switched.
-//   Any other answer is final: a 404 is not retried.
+//   Any other answer is final: a 404 is not retried - a DELETE's 404 is done (the entity is gone, as asked).
 // - A target's queue holds QUEUE_MAX at most: beyond, the oldest is dropped.
 // - Dropped, or failed: told to the engine (engineQueue "action") - the rule's lastError and droppedActions are the
 //   engine's.
@@ -31,7 +31,7 @@
 
 
 
-#define QUEUE_MAX     100                        // PATCHes waiting per target - the oldest dropped beyond
+#define QUEUE_MAX     100                        // requests waiting per target - the oldest dropped beyond
 #define BACKOFF_FIRST 250                        // ms
 #define BACKOFF_MAX   5000                       // ms
 
@@ -39,14 +39,15 @@
 
 // -----------------------------------------------------------------------------
 //
-// Patch - one PATCH waiting
+// Patch - one request waiting - a PATCH, a POST or a DELETE
 //
 typedef struct Patch
 {
   struct Patch*  next;
   char*          ruleId;
   int            action;                         // 1..: the rule's action; 0: a step
-  char*          body;                           // JSON text
+  CorRestVerb    verb;                           // PATCH (attributes), POST (create), DELETE
+  char*          body;                           // JSON text; NULL: none (DELETE)
   long long      madeAt;                         // nowMs()
 } Patch;
 
@@ -74,7 +75,7 @@ static pthread_mutex_t  mutex       = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t   cond        = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t   emptyCond   = PTHREAD_COND_INITIALIZER;
 static Target*          targetList  = NULL;
-static int              waiting     = 0;         // PATCHes in all the queues, the one out included
+static int              waiting     = 0;         // requests in all the queues, the one out included
 static long long        retryForMs  = 30000;
 
 
@@ -110,13 +111,24 @@ static void report(const char* ruleId, int action, bool dropped, const char* why
 
 // -----------------------------------------------------------------------------
 //
-// senderPatch - a PATCH of <entity>'s attributes, at the end of its queue
+// verbName -
 //
-void senderPatch(const char* ruleId, int action, const char* entity, const char* body)
+static const char* verbName(CorRestVerb verb)
+{
+  return (verb == CorVerbPost) ? "POST" : (verb == CorVerbDelete) ? "DELETE" : "PATCH";
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// enqueue - a request on <entity>, at the end of its queue
+//
+static void enqueue(const char* ruleId, int action, const char* entity, CorRestVerb verb, const char* body)
 {
   Patch* pP = calloc(1, sizeof(Patch));
 
-  if ((pP == NULL) || ((pP->ruleId = strdup(ruleId)) == NULL) || ((pP->body = strdup(body)) == NULL))
+  if ((pP == NULL) || ((pP->ruleId = strdup(ruleId)) == NULL) || ((body != NULL) && ((pP->body = strdup(body)) == NULL)))
   {
     if (pP != NULL)
       patchFree(pP);
@@ -124,6 +136,7 @@ void senderPatch(const char* ruleId, int action, const char* entity, const char*
     return;
   }
   pP->action = action;
+  pP->verb   = verb;
   pP->madeAt = nowMs();
 
   pthread_mutex_lock(&mutex);
@@ -184,10 +197,33 @@ void senderPatch(const char* ruleId, int action, const char* entity, const char*
   if (droppedP != NULL)
   {
     char why[600];
-    snprintf(why, sizeof(why), "PATCH %s: dropped - %d waiting for it already", entity, QUEUE_MAX);
+    snprintf(why, sizeof(why), "%s %s: dropped - %d waiting for it already", verbName(droppedP->verb), entity, QUEUE_MAX);
     report(droppedP->ruleId, droppedP->action, true, why);
     patchFree(droppedP);
   }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// senderPatch, senderCreate, senderDelete - a PATCH of <entity>'s attributes, <entity> created (body: the whole
+// entity, POST /entities), <entity> deleted - each at the end of <entity>'s queue: a create, a PATCH, a delete of
+// one entity go out in the order they were made
+//
+void senderPatch(const char* ruleId, int action, const char* entity, const char* body)
+{
+  enqueue(ruleId, action, entity, CorVerbPatch, body);
+}
+
+void senderCreate(const char* ruleId, int action, const char* entity, const char* body)
+{
+  enqueue(ruleId, action, entity, CorVerbPost, body);
+}
+
+void senderDelete(const char* ruleId, int action, const char* entity)
+{
+  enqueue(ruleId, action, entity, CorVerbDelete, NULL);
 }
 
 
@@ -228,7 +264,7 @@ static Target* nextDue(long long* dueAtP)
 
 // -----------------------------------------------------------------------------
 //
-// senderThread - the PATCHes due, one at a time
+// senderThread - the requests due, one at a time
 //
 static void* senderThread(void* arg)
 {
@@ -279,15 +315,22 @@ static void* senderThread(void* arg)
     char        path[1024];
     CepResponse resp;
 
-    snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(&alloc, id));
-    bool answered = brokerRequestText(&alloc, CorVerbPatch, path, NULL, pP->body, &resp);
-    bool done     = answered && (resp.status == 204);
+    if (pP->verb == CorVerbPost)
+      snprintf(path, sizeof(path), "/entities");
+    else if (pP->verb == CorVerbDelete)
+      snprintf(path, sizeof(path), "/entities/%s", urlEncode(&alloc, id));
+    else
+      snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(&alloc, id));
+
+    bool answered = brokerRequestText(&alloc, pP->verb, path, NULL, pP->body, &resp);
+    bool done     = answered && ((resp.status == 204) || ((pP->verb == CorVerbPost) && (resp.status == 201)) ||
+                                 ((pP->verb == CorVerbDelete) && (resp.status == 404)));   // gone already: what was asked
     char why[600] = { 0 };
 
     if (done == false)
     {
       char what[512];
-      snprintf(what, sizeof(what), "PATCH %s", id);
+      snprintf(what, sizeof(what), "%s %s", verbName(pP->verb), id);
       brokerFailed(why, sizeof(why), what, &resp);
     }
     corAllocBufferReset(&alloc, true);
@@ -374,7 +417,7 @@ bool senderStart(int retryForS)
 
 // -----------------------------------------------------------------------------
 //
-// senderDrain - at a stop: waits till every PATCH is sent (or dropped), ms at most; the number still waiting
+// senderDrain - at a stop: waits till every request is sent (or dropped), ms at most; the number still waiting
 //
 int senderDrain(long long ms)
 {
