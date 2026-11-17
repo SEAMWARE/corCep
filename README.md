@@ -707,7 +707,9 @@ corCep without it - and without corNgsild, corJsonld and corHash (137 KB of a 39
 ## How it talks to the broker
 
 - `urn:ngsi-ld:Subscription:corcep-rules` - every Rule entity, created, deleted, or with `when`, `then`, `enabled`
-  or `name` changed: the rules are read again.
+  or `name` changed: the rules are read again. The read failing (the broker not answering, or an error): the rules
+  running are kept, and the read is tried again - after 1 s, doubling to 30 s - till it works. At start: no rules
+  till then.
 - `urn:ngsi-ld:Subscription:corcep-<n>` - one per (entity or type, attribute, `where`) the rules watch. A subscription
   stays as long as a rule needs it - a rule added or removed does not touch the others' subscriptions, so no
   event is lost while the rules are read again.
@@ -792,14 +794,8 @@ functional tests run on that binary, then gcovr (>= 8.3; `GCOVR=<path>`). It mea
 cor-libs it links, which stay uninstrumented sibling checkouts. A corCep a test kills with `kill -9` writes no
 counts.
 
-2026-11-17, 42 tests: **86.9 % of the lines** (3208 of 3693), all 192 functions, 71.8 % of the branches. Most of
-what is not run: out of memory, the broker answering an error, start-up option errors. Features no test reaches:
-
-- a target's queue full (100 requests waiting for one entity): the oldest dropped (`sender.c`)
-- `/dry-run` showing a `toggle`, `step`, `create`, `delete` action (`dryrun.c`)
-- a `step` stopped because its rule is gone after a reload (`engine.c`)
-- `--state` of a `repeat` rule's times (`pattern.c`)
-- the rules' `GET` failing at a reload (`rules.c`)
+2026-11-17, 47 tests: **88.3 % of the lines** (3277 of 3710), all 192 functions, 72.8 % of the branches. What is not
+run is mostly error handling: out of memory, the broker answering an error, start-up option errors.
 
 ## License
 

@@ -1,0 +1,102 @@
+#
+# FILE            cep_state_repeat.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# --state with a 'repeat' rule (pattern.c patternsSave/patternsLoad): the times of the presses seen are written and
+# read back - two presses before a restart and one after make three. Without --state the count starts again.
+#
+--NAME--
+A repeat rule with --state: two presses before a restart, one after - three, the rule fires
+
+--TAGS--
+cep state repeat
+
+--INIT--
+cepTestInit
+
+--RUN--
+SW=urn:ngsi-ld:WallSwitch:office
+STATE="$CEP_TEST_DIR/state.cor"
+rm -f "$STATE"
+
+
+echo "01. A switch, a light; rule 'triple': three presses within 20 s; corCep with --state"
+echo "===================================================================================="
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"press\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:office", "type": "Light", "mark": {"type": "Property", "value": 0}}'
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:triple\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"events\": [{\"event\": \"press\", \"entity\": \"$SW\", \"attribute\": \"press\"}],
+                                                   \"pattern\": {\"repeat\": \"press\", \"min\": 3, \"within\": \"PT20S\"}}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"urn:ngsi-ld:Light:office\", \"set\": {\"mark\": 1}}]}}"
+cepStart --state "$STATE"
+echo
+echo
+
+
+echo "02. Two presses, then corCep stopped - the state written; not fired"
+echo "==================================================================="
+press $SW press
+press $SW press
+sleep 0.3
+cepStop
+grep -o "stopped (signal 15) - the state written" "$CEP_TEST_DIR/corCep.log"
+echo "triple: $(firedCount triple)"
+echo
+echo
+
+
+echo "03. Started again with --state, one press: three within 20 s - fired"
+echo "===================================================================="
+cepStart --state "$STATE"
+press $SW press
+firedAwait triple 1
+echo
+echo
+
+
+echo "04. Again, two presses, a restart WITHOUT --state, one press: the count started again - not fired"
+echo "================================================================================================"
+sleep 0.3
+cepStop
+cepStart --state "$STATE"
+press $SW press
+press $SW press
+sleep 0.3
+cepStop
+cepStart
+press $SW press
+sleep 0.5
+echo "triple: $(firedCount triple)"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A switch, a light; rule 'triple': three presses within 20 s; corCep with --state
+====================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. Two presses, then corCep stopped - the state written; not fired
+===================================================================
+stopped (signal 15) - the state written
+triple: 0
+
+
+03. Started again with --state, one press: three within 20 s - fired
+====================================================================
+triple: 1
+
+
+04. Again, two presses, a restart WITHOUT --state, one press: the count started again - not fired
+================================================================================================
+triple: 0
+
+

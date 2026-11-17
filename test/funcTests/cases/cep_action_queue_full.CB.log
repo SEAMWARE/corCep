@@ -1,0 +1,9 @@
+T: 000000.000: ldInit.c[336]: ldInit: Initializing corNgsild library (T-200)
+E: 000000.163: corRestInit.c[607]: corRestProcessRequest: 404 Not Found: GET /ngsi-ld/v1/nothing is not a recognized resource
+E: 000000.246: corJsonParse.c[675]: corJsonParseValue: JSON Parse Error: invalid value
+E: 000000.246: corJsonParse.c[1167]: corJsonParse: corJsonParseValue error
+E: 000000.455: transport.c[843]: upgradeHook: 400 Bad Request: a WebSocket upgrade needs a Sec-WebSocket-Key
+E: 000000.459: transport.c[843]: upgradeHook: 400 Bad Request: Sec-WebSocket-Version 13 only
+E: 000000.463: transport.c[843]: upgradeHook: 400 Bad Request: the subprotocol ngsi-ld.json only (Sec-WebSocket-Protocol)
+E: 000000.468: transport.c[820]: upgradeHook: 404 Not Found: an upgrade is served on /ngsi-ld/v1/ws only
+E: 000000.472: corRestInit.c[607]: corRestProcessRequest: 404 Not Found: GET /ngsi-ld/v1/ws is not a recognized resource

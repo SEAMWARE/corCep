@@ -1,0 +1,116 @@
+#
+# FILE            cep_rules_reload_failed.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# The rules' GET failing (engine.c rulesReload): the rules running are kept, and the read is tried again - 1 s,
+# doubling to 30 s - until it works; a rule made meanwhile is then read. At start too: no rules till the broker
+# answers. A proxy (tools/ftFlakyBroker.py, "RULES <status>") answers the rules' GET 500.
+#
+--NAME--
+The rules' GET failing: the rules running kept, read again till it works - at a reload and at start
+
+--TAGS--
+cep rules reload
+
+--INIT--
+cepTestInit
+
+--RUN--
+FAIL="$CEP_TEST_DIR/fail"
+PLOG="$CEP_TEST_DIR/patches.log"
+PPORT=$((CEP_PORT + 5))
+rm -f "$FAIL" "$PLOG"
+flakyBrokerStart $PPORT "$FAIL" "$PLOG"
+SW=urn:ngsi-ld:WallSwitch:office
+rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"$1\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"urn:ngsi-ld:Light:office\", \"set\": {\"$1\": true}}]}}"; }
+
+
+echo "01. A switch, a light; rule 'a'; corCep through the proxy"
+echo "=========================================================="
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"a\": {\"type\": \"Property\", \"value\": 0}, \"b\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:office", "type": "Light", "a": {"type": "Property", "value": false}}'
+rule a
+CEP_BROKER_URL="http://127.0.0.1:$PPORT" cepStart --stats-interval 0
+cepAwaitLog "1 rule,"
+echo
+echo
+
+
+echo "02. The rules' GET answered 500; rule 'b' made: not read - 'a' kept, and it fires"
+echo "================================================================================="
+echo "RULES 500" > "$FAIL"
+rule b
+cepAwaitLog "the rules not read - the 1 running kept; read again in 1 s"
+press $SW a
+firedAwait a 1
+press $SW b
+sleep 0.5
+echo "b fired: $(firedCount b)"
+echo
+echo
+
+
+echo "03. The broker healed: the read tried again works - 'b' is read, and fires"
+echo "=========================================================================="
+rm -f "$FAIL"
+cepAwaitLog "2 rules," 5
+press $SW b
+firedAwait b 1
+echo
+echo
+
+
+echo "04. corCep started while the rules' GET fails: no rules, read again; healed - both read, 'a' fires"
+echo "=================================================================================================="
+cepStop
+echo "RULES 500" > "$FAIL"
+(sleep 2; rm -f "$FAIL") &                       # healed while corCep tries - cepStart waits for the rules read
+healer=$!
+CEP_BROKER_URL="http://127.0.0.1:$PPORT" cepStart --stats-interval 0
+wait $healer
+cepAwaitLog "the rules not read - the 0 running kept; read again in 1 s"
+cepAwaitLog "2 rules,"
+press $SW a
+firedAwait a 1
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+cepPidStop "$CEP_TEST_DIR/proxy.pid"
+
+--EXPECT--
+01. A switch, a light; rule 'a'; corCep through the proxy
+==========================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+1 rule, 1 subscription
+
+
+02. The rules' GET answered 500; rule 'b' made: not read - 'a' kept, and it fires
+=================================================================================
+POST /entities: 201
+the rules not read - the 1 running kept; read again in 1 s
+a: 1
+b fired: 0
+
+
+03. The broker healed: the read tried again works - 'b' is read, and fires
+==========================================================================
+2 rules, 2 subscriptions
+b: 1
+
+
+04. corCep started while the rules' GET fails: no rules, read again; healed - both read, 'a' fires
+==================================================================================================
+the rules not read - the 0 running kept; read again in 1 s
+2 rules, 2 subscriptions
+a: 1
+
+

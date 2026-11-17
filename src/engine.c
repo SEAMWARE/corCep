@@ -1371,11 +1371,38 @@ static void rightsCheck(void)
 //
 // rulesReload - a new generation; the old one stays if the broker did not answer
 //
+static long long reloadAt      = 0;              // a reload failed: tried again at this time (0: none due)
+static long long reloadAfterMs = 0;              // the wait before the next try - 1 s, doubling to 30 s
+
 static void rulesReload(void)
 {
   CepRules* newP = rulesLoad();
-  if (newP == NULL)
+
+  if (newP == NULL)                              // the broker did not answer, or answered an error (rulesLoad logs it)
+  {
+    reloadAfterMs = (reloadAfterMs == 0) ? 1000 : (reloadAfterMs * 2 > 30000) ? 30000 : reloadAfterMs * 2;
+    reloadAt      = nowMs() + reloadAfterMs;
+
+    if (rules == NULL)                           // the first read: no rules till one works - never a NULL generation
+    {
+      CorAlloc alloc;
+      corAllocBufferInit(&alloc, NULL, 0, 1024, NULL, "corCep no rules");
+      rules = rulesParse(corTreeArray(&alloc, NULL), time(NULL), NULL, NULL);
+      corAllocBufferReset(&alloc, false);
+      if (rules == NULL)
+      {
+        logLine("out of memory for the rules");
+        exit(1);
+      }
+      patternsAdopt(patterns, rules, nowMs());
+    }
+
+    logLine("the rules not read - the %d running kept; read again in %lld s", rules->rules, reloadAfterMs / 1000);
     return;
+  }
+
+  reloadAt      = 0;
+  reloadAfterMs = 0;
 
   subsApply(newP);
   rulesFree(rules);
@@ -1492,11 +1519,16 @@ void engineRun(void)
         rulesReload();
     }
 
+    if ((reloadAt != 0) && (now >= reloadAt))     // a reload that failed, tried again
+      rulesReload();
+
     long long next = patternsTimers(patterns, rules, now, fireCb, &alloc);
     long long step = steppersRun(&alloc, nowMs());
 
     if ((step != 0) && ((next == 0) || (step < next)))
       next = step;
+    if ((reloadAt != 0) && ((next == 0) || (reloadAt < next)))
+      next = reloadAt;
     long long wait = ((next != 0) && (next - now < 1000)) ? next - now : 1000;
 
     if (stateDirty && (stateFile != NULL) && (nowMs() - savedAt >= 1000))
