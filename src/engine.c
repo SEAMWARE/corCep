@@ -611,7 +611,7 @@ static CepCondition* condFailing(CorAlloc* allocP, CepRule* ruleP, CepCondition*
 //
 // condText - a condition in words, for the log: a leaf its q; a group "all(a; b)", "any(a | b)"
 //
-static void condText(CepCondition* cP, char* buf, int bufLen)
+void condText(CepCondition* cP, char* buf, int bufLen)
 {
   if (cP->kind == CondLeaf)
   {

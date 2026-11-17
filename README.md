@@ -11,7 +11,8 @@ out as NGSI-LD requests.
 **Status: P2.5** - named events; patterns `any`, `seq`, `all`, `repeat`, `absent`, `window`, `supersedes`;
 schedules `cron` and `at` (a clock time, sunrise, sunset); `where` filters; `if` conditions on other entities -
 `all` / `any` groups, nested;
-`set`, `toggle` and `step` (... `until`) actions, on one entity or a group; rule statistics. `/dry-run` comes next.
+`set`, `toggle` and `step` (... `until`) actions, on one entity or a group; rule statistics; `POST /dry-run` - rules
+replayed against made-up events, for the rule editors.
 
 ## Build
 
@@ -31,6 +32,7 @@ make install          # /usr/local/bin/corCep (PREFIX=..., DESTDIR=...)
 corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant T]
        [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S]
        [--renew-interval PT1H]
+       [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
 ```
 
 | Option | |
@@ -44,6 +46,12 @@ corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant
 | `--broker-cert`, `-bc` | the broker's own certificate (PEM), trusted as it is - for a broker whose certificate no CA signed and whose name is not the one in `--broker`. See [A broker with a certificate of its own](#a-broker-with-a-certificate-of-its-own) |
 | `--stats-interval`, `-si` | how often at most a rule's statistics are written to its Rule entity - seconds or ISO 8601 (default `PT10S`; 0: at once) - see [Statistics](#statistics) |
 | `--renew-interval`, `-ri` | how often corCep's subscriptions are renewed - seconds or ISO 8601 (default `PT1H`, up to `P365D`; 0: never) - a broker that keeps a subscription's owner only for a while (coraine `--auth oidc`: `--oidcOwnerMaxAge`, 24 h) stops notifying once it runs out, without a word |
+| `--jwks`, `-jw` | the JWK Set - a URL (`http://`, `https://`) or a file - that the rule editors' tokens are checked against. Turns `POST /dry-run` on; keys that cannot be read: corCep does not start. See [Dry run](#dry-run) |
+| `--issuer`, `-is` | with `--jwks`: the `iss` a token must have (default: not checked) |
+| `--audience`, `-au` | with `--jwks`: an `aud` a token must have (default: not checked) |
+| `--roles-claim`, `-rc` | with `--jwks`: the claim holding the roles - a path, dot-separated (default `realm_access.roles`, Keycloak's); an array of strings, or one string of them, space-separated |
+| `--editor-role`, `-er` | with `--jwks`: the role a token needs for `/dry-run` (default `ngsild-write`) |
+| `--jwks-refresh`, `-jr` | with `--jwks`: how often the keys are fetched again - seconds or ISO 8601 (default `PT5M`, up to `P1D`); at once too when a token names a key not in the set |
 
 The options can also come from the environment: `CORCEP_BROKER`, `CORCEP_PORT`, ...
 
@@ -345,6 +353,84 @@ corCep --broker https://localhost:1026 --broker-cert /etc/hub/tls/cert.pem --tok
 Without `--broker-cert`, an `https://` broker's certificate is checked against the system's CA store and its name.
 
 The test `cep_broker_auth` runs both against a broker of its own (HTTPS, OIDC with a JWK Set file - `broker.sh up` starts it).
+
+## Dry run
+
+`POST /dry-run` replays rules against events made up for the purpose - what would fire, when, on which entities,
+and what an `if` stopped. Nothing is written and the broker is not asked: the rule editors call it while a rule
+is being written. The rules are parsed and run by the same code as the running ones, on a clock of the replay's own.
+
+It is on with `--jwks` only (else 404), on corCep's `--port`. The caller sends its own token -
+`Authorization: Bearer <token>`, a JWT (RS256 or ES256) signed by a key in the `--jwks` set, with `--issuer` /
+`--audience` when given, and the `--editor-role` in its `--roles-claim`: no token or a bad one 401, no role 403.
+
+The request:
+
+| Member | |
+|---|---|
+| `rules` | Rule entities, keyValues - as `GET /entities?type=Rule&options=keyValues` gives them (`when` and `then` as `{"json": ...}`); 100 at most. A rule that does not parse is listed in the answer's `leftOut`, the others replayed |
+| `events` | the events: `{"at", "entity", "type", "attribute", "value"}`; `at` - ms from the start, or an ISO 8601 duration (`PT0.5S`); `type` - needed for rules on a type; `value` - the attribute's value, or the attribute itself (`{"type": "Property", "value": ...}`); 10000 at most, replayed in time order |
+| `entities` | the entities `where`, `if` and a group target's `q` are evaluated against - normalized or keyValues; each event changes its entity's attribute first |
+| `start` | the wall clock at 0, ISO 8601 - for `cron` and `at` (default: now) |
+| `for` | how long the replay runs, an ISO 8601 duration (default: the last event + `PT1H`, for the deadlines of `absent`, windows, `supersedes`); 31 days at most |
+
+The answer:
+
+| Member | |
+|---|---|
+| `fires` | each time a rule was done, in time order: `at` (ms from the start), `time`, `rule`, `entity` (the event's; `null` for a schedule), `fired` - `true` with the `actions` (each target entity named, a group's resolved against `entities`), or `false` with `why` (the `if` that did not hold) |
+| `leftOut` | the rules not replayed: `rule`, `why` |
+| `start`, `end` | the replay's start (ISO 8601) and end (ms) |
+| `truncated` | `true`: stopped at 1000 fires |
+
+What a replay does not do: actions are not applied - a light switched by one rule does not change the state the next
+rule sees, and a `step` is reported, not stepped. `where`, `if` and group `q`s are evaluated by corNgsild's matcher
+(the broker's) with the attribute names as written - no `@context`. A replay runs on the listener's thread: while it
+runs, notifications wait (the limits above keep it short).
+
+```
+mkdir -p /tmp/ed
+python3 test/funcTests/tools/ftJwt.py key --out /tmp/ed --name k1 --alg ES256
+python3 test/funcTests/tools/ftJwt.py jwks --out /tmp/ed/jwks.json /tmp/ed/k1.jwk
+corCep --broker http://localhost:1026 --jwks /tmp/ed/jwks.json &
+TOKEN=$(python3 test/funcTests/tools/ftJwt.py sign --key /tmp/ed/k1.pem --alg ES256 --claims '{"realm_access": {"roles": ["ngsild-write"]}}')
+curl -s -X POST localhost:7602/dry-run -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
+  "start": "2026-11-17T18:00:00Z",
+  "rules": [{"id": "urn:ngsi-ld:Rule:hall", "type": "Rule",
+             "when": {"json": {"entity": "urn:ngsi-ld:WallSwitch:hall", "attribute": "press"}},
+             "then": {"json": [{"toggle": "on", "entity": "urn:ngsi-ld:Light:hall"}]}}],
+  "events": [{"at": "PT1S", "entity": "urn:ngsi-ld:WallSwitch:hall", "attribute": "press", "value": "upper"}]
+}'
+```
+
+```
+{
+  "start": "2026-11-17T18:00:00.000Z",
+  "end": 3601000,
+  "fires": [
+    {
+      "at": 1000,
+      "time": "2026-11-17T18:00:01.000Z",
+      "rule": "urn:ngsi-ld:Rule:hall",
+      "entity": "urn:ngsi-ld:WallSwitch:hall",
+      "fired": true,
+      "actions": [
+        {
+          "toggle": "on",
+          "entities": [
+            "urn:ngsi-ld:Light:hall"
+          ]
+        }
+      ]
+    }
+  ],
+  "leftOut": [],
+  "truncated": false
+}
+```
+
+The tests `cep_dry_run` (the replay) and `cep_dry_run_auth` (the token, the errors) run it. `make DRY_RUN=0` builds
+corCep without it - and without corNgsild, corJsonld and corHash (137 KB of a 395 KB binary).
 
 ## How it talks to the broker
 

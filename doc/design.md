@@ -6,7 +6,7 @@ NGSI-LD broker; with coraine it can also run inside the broker.
 
 Status: P1 and P2.1 to P2.5 built (README.md) - events, `where`, the patterns any / seq / all / repeat / absent /
 window, the schedules cron / at, `supersedes`, `if`, set / toggle / step ... until on one entity or a group,
-statistics. Section 8 lists the decisions, section 9 the releases.
+statistics, `/dry-run`. Section 8 lists the decisions, section 9 the releases.
 
 ## 1. What it is for
 
@@ -216,8 +216,8 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 
 | | |
 |---|---|
-| built | events, `where`; any / seq / all / repeat / absent / window; cron / at; `supersedes`; `if` (all / any); set / toggle / step ... until on one entity or a group; Rule statistics; broker auth (`--token-command`, `--broker-cert`); subscriptions renewed |
-| to build | `/dry-run`; `state.cor` (matches, deadlines, windows and steps over a restart); `retryFor` with back-off; a bounded notification queue; the ordered action queue per target; `create` / `delete` actions; `${...}` match values in actions; the author's rights checked per target (section 7) |
+| built | events, `where`; any / seq / all / repeat / absent / window; cron / at; `supersedes`; `if` (all / any); set / toggle / step ... until on one entity or a group; Rule statistics; broker auth (`--token-command`, `--broker-cert`); subscriptions renewed; `/dry-run` (the caller's token against `--jwks`; a pure replay - `where`, `if` and groups against the request's entities, corNgsild's q matcher) |
+| to build | `state.cor` (matches, deadlines, windows and steps over a restart); `retryFor` with back-off; a bounded notification queue; the ordered action queue per target; `create` / `delete` actions; `${...}` match values in actions; the author's rights checked per target (section 7) |
 | packaging | a version tag and `--version`, a Docker image, the docs, the repo public |
 
 **v1.1** - `cep.so`: the engine as a library, a coraine write-path hook (under its own `COR_FEATURE` flag),

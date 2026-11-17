@@ -234,13 +234,15 @@ static void setStr(char** pP, const char* s)
 
 // -----------------------------------------------------------------------------
 //
-// scheduleSet - a cron / at rule's next fire after <after>, logged
+// scheduleSet - a cron / at rule's next fire after <after>, logged (not in a dry run)
 //
-static void scheduleSet(CepRule* ruleP, Part* pP, time_t after)
+static void scheduleSet(CepPatterns* psP, CepRule* ruleP, Part* pP, time_t after)
 {
   char buf[64];
 
   pP->scheduleAt = scheduleNext(ruleP, after);
+  if (psP->wallAtZeroMs != 0)                    // a dry run: not logged
+    return;
   if (pP->scheduleAt != 0)
     logLine("rule %s: next %s", ruleP->id, scheduleText(pP->scheduleAt, buf, sizeof(buf)));
   else
@@ -305,7 +307,7 @@ void patternsAdopt(CepPatterns* psP, CepRules* rulesP, long long now)
     {
       Part* pP = partOf(sP, "");
       if ((pP != NULL) && (pP->scheduleAt == 0))
-        scheduleSet(ruleP, pP, (time_t) (wallMs(psP, now) / 1000));
+        scheduleSet(psP, ruleP, pP, (time_t) (wallMs(psP, now) / 1000));
     }
 
     if (fresh && (ruleP->kind == CepPatternAbsent) && (ruleP->partitioned == false))
@@ -792,7 +794,8 @@ void patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch, const char* en
     case CepPatternWindow:
       if (valueP == NULL)
       {
-        logLine("rule %s: %s's '%s' is not a number - not in the window", ruleP->id, entity, ruleP->eventV[ev].attribute);
+        if (psP->wallAtZeroMs == 0)                // a dry run: not logged
+          logLine("rule %s: %s's '%s' is not a number - not in the window", ruleP->id, entity, ruleP->eventV[ev].attribute);
         break;
       }
       windowFeed(sP, ruleP, pP, *valueP, now);
@@ -914,7 +917,7 @@ long long patternsTimers(CepPatterns* psP, CepRules* rulesP, long long now, CepF
         {
           time_t at = pP->scheduleAt;
           fire(ruleP, NULL, ctx);
-          scheduleSet(ruleP, pP, (at > wallSec) ? at : wallSec);
+          scheduleSet(psP, ruleP, pP, (at > wallSec) ? at : wallSec);
         }
 
         if (pP->scheduleAt != 0)

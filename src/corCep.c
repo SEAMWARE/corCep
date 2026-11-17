@@ -8,6 +8,7 @@
 //
 //   corCep --broker http://host:port [--port 7602] [--notify-url http://host:7602] [--tenant T]
 //          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S] [--renew-interval PT1H]
+//          [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
 //
 #include <stdarg.h>                              // va_list
 #include <stdio.h>                               // fprintf, vfprintf
@@ -41,6 +42,12 @@ static char* tokenCmdArg  = NULL;
 static char* brokerCertArg = NULL;
 static char* notifyUrlArg = NULL;
 static int   portArg      = 7602;
+static char* jwksArg      = NULL;
+static char* issuerArg    = NULL;
+static char* audienceArg  = NULL;
+static char* rolesClaimArg = NULL;
+static char* editorRoleArg = NULL;
+static int   jwksRefreshArg = 300;
 
 
 
@@ -59,6 +66,12 @@ static CorArg options[] =
   { "--broker-cert", "-bc", CorArgString, &brokerCertArg, CorArgOpt, NULL,     NULL,  NULL,        "the broker's own certificate (PEM): trusted as it is, instead of the CA store and the host name" },
   { "--stats-interval", "-si", CorArgDuration, &statsInterval, CorArgOpt, _vp 10,  _vp 0, _vp 86400,   "how often at most a rule's statistics are written to its Rule entity - seconds or ISO 8601 (PT10S, PT1M; 0: at once)" },
   { "--renew-interval", "-ri", CorArgDuration, &renewInterval, CorArgOpt, _vp 3600, _vp 0, _vp 31536000, "how often corCep's subscriptions are renewed - seconds or ISO 8601 (PT1H, P1D; up to P365D; 0: never). A broker that keeps a subscription's owner only for a while (coraine --auth oidc: 24 h) stops notifying once it runs out" },
+  { "--jwks",       "-jw", CorArgString, &jwksArg,      CorArgOpt, NULL,      NULL,  NULL,        "the JWK Set (a URL or a file) the rule editors' tokens are checked against - turns POST /dry-run on" },
+  { "--issuer",     "-is", CorArgString, &issuerArg,    CorArgOpt, NULL,      NULL,  NULL,        "with --jwks: the iss a token must have (default: not checked)" },
+  { "--audience",   "-au", CorArgString, &audienceArg,  CorArgOpt, NULL,      NULL,  NULL,        "with --jwks: an aud a token must have (default: not checked)" },
+  { "--roles-claim", "-rc", CorArgString, &rolesClaimArg, CorArgOpt, _vp "realm_access.roles", NULL, NULL, "with --jwks: the claim holding the roles - a path, dot-separated; an array of strings, or a string of them, space-separated" },
+  { "--editor-role", "-er", CorArgString, &editorRoleArg, CorArgOpt, _vp "ngsild-write", NULL, NULL, "with --jwks: the role a token needs for /dry-run" },
+  { "--jwks-refresh", "-jr", CorArgDuration, &jwksRefreshArg, CorArgOpt, _vp 300, _vp 1, _vp 86400, "with --jwks: how often the keys are fetched again - seconds or ISO 8601 (PT5M); at once too when a token names a key not in the set" },
   CORARGS_END
 };
 
@@ -193,6 +206,20 @@ int main(int argC, char* argV[])
   {
     fprintf(stderr, "corCep: %s\n", why);
     return 1;
+  }
+
+  if ((jwksArg != NULL) && (jwksArg[0] != 0))
+  {
+#if CEP_WITH_DRY_RUN
+    if (dryRunInit(jwksArg, issuerArg, audienceArg, rolesClaimArg, editorRoleArg, jwksRefreshArg, why, sizeof(why)) == false)
+    {
+      fprintf(stderr, "corCep: %s\n", why);
+      return 1;
+    }
+#else
+    fprintf(stderr, "corCep: --jwks - this corCep is built without /dry-run (DRY_RUN=0)\n");
+    return 1;
+#endif
   }
 
   //
