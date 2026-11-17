@@ -38,7 +38,7 @@ echo
 echo "02. --jwks naming no file - corCep does not start"
 echo "================================================="
 timeout 5 "$CEP_BIN" --broker "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT" --port "$CEP_PORT" --tenant "$(cepTenant)" \
-        --jwks "$CEP_TEST_DIR/none.json" 2>&1 | sed 's|/tmp/[^ ]*none.json|.../none.json|g'
+        --jwks "$CEP_TEST_DIR/none.json" 2>&1 | sed "s|$CEP_TEST_DIR/none.json|.../none.json|g"
 echo "exit: ${PIPESTATUS[0]}"
 echo
 echo
