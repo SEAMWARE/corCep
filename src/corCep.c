@@ -7,7 +7,7 @@
 // corCep - an NGSI-LD complex event processor (doc/design.md)
 //
 //   corCep --broker http://host:port [--port 7602] [--notify-url http://host:7602] [--tenant T]
-//          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval 10] [--renew-interval 3600]
+//          [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S] [--renew-interval PT1H]
 //
 #include <stdarg.h>                              // va_list
 #include <stdio.h>                               // fprintf, vfprintf
@@ -57,8 +57,8 @@ static CorArg options[] =
   { "--token-env",  "-te", CorArgString, &tokenEnvArg,  CorArgOpt, NULL,      NULL,  NULL,        "the environment variable holding the bearer token sent to the broker" },
   { "--token-command", "-tc", CorArgString, &tokenCmdArg, CorArgOpt, NULL,     NULL,  NULL,        "a command printing the bearer token - run again before it expires, and on a 401" },
   { "--broker-cert", "-bc", CorArgString, &brokerCertArg, CorArgOpt, NULL,     NULL,  NULL,        "the broker's own certificate (PEM): trusted as it is, instead of the CA store and the host name" },
-  { "--stats-interval", "-si", CorArgInt, &statsInterval, CorArgOpt, _vp 10,  _vp 0, _vp 86400,   "seconds between two writes of a rule's statistics to its Rule entity (0: at once)" },
-  { "--renew-interval", "-ri", CorArgInt, &renewInterval, CorArgOpt, _vp 3600, _vp 0, _vp 31536000, "seconds between two renewals of corCep's subscriptions - a broker that keeps a subscription's owner only for a while (coraine --auth oidc: 24 h) stops notifying once it runs out (0: never)" },
+  { "--stats-interval", "-si", CorArgDuration, &statsInterval, CorArgOpt, _vp 10,  _vp 0, _vp 86400,   "how often at most a rule's statistics are written to its Rule entity - seconds or ISO 8601 (PT10S, PT1M; 0: at once)" },
+  { "--renew-interval", "-ri", CorArgDuration, &renewInterval, CorArgOpt, _vp 3600, _vp 0, _vp 31536000, "how often corCep's subscriptions are renewed - seconds or ISO 8601 (PT1H, P1D; up to P365D; 0: never). A broker that keeps a subscription's owner only for a while (coraine --auth oidc: 24 h) stops notifying once it runs out" },
   CORARGS_END
 };
 
