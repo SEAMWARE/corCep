@@ -11,7 +11,8 @@
 #
 # Every request is passed on to the broker, except a PATCH /ngsi-ld/v1/entities/<id>/attrs whose <id> is a line of
 # <fail file> - "<id> <status>": answered <status> itself (0: the connection closed, no answer at all). A line
-# "GET <ms>": every GET is passed on <ms> late - a slow broker. The file is read at each
+# "GET <ms>": every GET is passed on <ms> late - a slow broker. A line "RULES <status>": the rules' GET
+# (/ngsi-ld/v1/entities?type=Rule...) answered <status> itself. The file is read at each
 # request: a test fails and heals the broker by writing the file. Each PATCH of attributes is logged, one line:
 # "<id> <body, compact> <status>".
 #
@@ -63,6 +64,17 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                 self.send_response(status)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
+                return
+
+        if self.command == "GET" and path == "/ngsi-ld/v1/entities" and "type=Rule" in self.path:
+            status = failing("RULES")
+            if status is not None:
+                answer = b'{"type":"https://uri.etsi.org/ngsi-ld/errors/InternalError","title":"made to fail","status":%d}' % status
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(answer)))
+                self.end_headers()
+                self.wfile.write(answer)
                 return
 
         if self.command == "GET":

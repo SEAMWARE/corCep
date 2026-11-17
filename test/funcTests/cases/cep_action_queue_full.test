@@ -1,0 +1,94 @@
+#
+# FILE            cep_action_queue_full.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# A target's queue full (sender.c): 100 requests waiting for one entity - its broker not answering - and the 101st
+# drops the oldest, counted in droppedActions, said in lastError. The broker healed: the rest go out, in order.
+# A proxy (tools/ftFlakyBroker.py) closes the connection on the light's PATCHes ("<id> 0").
+#
+--NAME--
+A target's queue full: 100 waiting, the oldest dropped and counted - the rest sent, in order, once the broker answers
+
+--TAGS--
+cep action queue
+
+--INIT--
+cepTestInit
+
+--RUN--
+FAIL="$CEP_TEST_DIR/fail"
+PLOG="$CEP_TEST_DIR/patches.log"
+PPORT=$((CEP_PORT + 5))
+rm -f "$FAIL" "$PLOG"
+flakyBrokerStart $PPORT "$FAIL" "$PLOG"
+SW=urn:ngsi-ld:WallSwitch:office
+L=urn:ngsi-ld:Light:office
+ruleAttr() { curl -s -H "NGSILD-Tenant: $(cepTenant)" "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/urn:ngsi-ld:Rule:level?options=keyValues&pick=$1" |
+             python3 -I -c 'import json, sys; d = json.load(sys.stdin); print(d.get(sys.argv[1], "-"))' "$1"; }
+
+
+echo "01. A switch, a light; rule 'level': the light's level set to the press's value; corCep through the proxy"
+echo "========================================================================================================"
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"press\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"$L\", \"type\": \"Light\", \"level\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:level\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"event\": \"press\", \"entity\": \"$SW\", \"attribute\": \"press\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"$L\", \"set\": {\"level\": \"\${press.value}\"}}]}}"
+CEP_BROKER_URL="http://127.0.0.1:$PPORT" cepStart --retry-for PT60S --stats-interval 0
+echo
+echo
+
+
+echo "02. The light's PATCHes not answered; 110 presses (1..110): 110 fires, 10 dropped - the oldest"
+echo "=============================================================================================="
+echo "$L 0" > "$FAIL"
+for i in $(seq 1 110); do attrSet $SW press $i; done
+firedAwait level 110 20
+grep -c "dropped - 100 waiting for it already" "$CEP_TEST_DIR/corCep.log"
+sleep 0.5
+echo "droppedActions: $(ruleAttr droppedActions)"
+ruleAttr lastError | sed 's/^action 1: //'
+echo
+echo
+
+
+echo "03. The broker healed: the 100 left go out, in order - the last one 110"
+echo "======================================================================="
+rm -f "$FAIL"
+for ((i = 0; i < 100; i++)); do [ "$(grep -c ' 204$' "$PLOG" 2>/dev/null)" -ge 100 ] && break; sleep 0.2; done
+echo "sent: $(grep -c ' 204$' "$PLOG")"
+grep ' 204$' "$PLOG" | sed 's/.*"value":\([0-9]*\).*/\1/' | python3 -I -c 'import sys; v = [int(x) for x in sys.stdin]; print("in order:", v == sorted(v), "- the last", v[-1])'
+echo "level: $(entityKv $L | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["level"])')"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+cepPidStop "$CEP_TEST_DIR/proxy.pid"
+
+--EXPECT--
+01. A switch, a light; rule 'level': the light's level set to the press's value; corCep through the proxy
+========================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. The light's PATCHes not answered; 110 presses (1..110): 110 fires, 10 dropped - the oldest
+==============================================================================================
+level: 110
+10
+droppedActions: 10
+PATCH urn:ngsi-ld:Light:office: dropped - 100 waiting for it already
+
+
+03. The broker healed: the 100 left go out, in order - the last one 110
+=======================================================================
+sent: 100
+in order: True - the last 110
+level: 110
+
+

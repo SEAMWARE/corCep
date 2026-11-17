@@ -1,0 +1,84 @@
+#
+# FILE            cep_action_step_rule_gone.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# A step running when its rule goes (engine.c rulesReload): deleted, the rule's steps stop - the attribute is not
+# changed again. A step with no end of its own (no 'until', no 'for', a far 'max').
+#
+--NAME--
+A step running when its rule is deleted: it stops - the attribute is not changed again
+
+--TAGS--
+cep action step
+
+--INIT--
+cepTestInit
+
+--RUN--
+SW=urn:ngsi-ld:WallSwitch:office
+L=urn:ngsi-ld:Light:office
+level() { entityKv $L | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["level"])'; }
+
+
+echo "01. A switch, a light; rule 'dim': a press steps the level up by 1 every 0.2 s, up to 1000; corCep"
+echo "==================================================================================================="
+ngsildStatus POST /entities "{\"id\": \"$SW\", \"type\": \"WallSwitch\", \"press\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"$L\", \"type\": \"Light\", \"level\": {\"type\": \"Property\", \"value\": 0}}"
+ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:dim\", \"type\": \"Rule\",
+  \"when\": {\"type\": \"JsonProperty\", \"json\": {\"entity\": \"$SW\", \"attribute\": \"press\"}},
+  \"then\": {\"type\": \"JsonProperty\", \"json\": [{\"entity\": \"$L\", \"step\": {\"attribute\": \"level\", \"by\": 1, \"every\": \"PT0.2S\", \"max\": 1000}}]}}"
+cepStart
+echo
+echo
+
+
+echo "02. A press: the level goes up"
+echo "=============================="
+press $SW press
+sleep 1
+a=$(level)
+sleep 0.6
+b=$(level)
+[ "$a" -gt 0 ] && [ "$b" -gt "$a" ] && echo "going up" || echo "not going up: $a, $b"
+echo
+echo
+
+
+echo "03. The rule deleted: read again - 0 rules; the level does not change any more"
+echo "==============================================================================="
+ngsildStatus DELETE /entities/urn:ngsi-ld:Rule:dim
+cepAwaitLog "0 rules,"
+sleep 0.5
+a=$(level)
+sleep 1
+b=$(level)
+[ "$a" = "$b" ] && echo "stopped" || echo "still going: $a, $b"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A switch, a light; rule 'dim': a press steps the level up by 1 every 0.2 s, up to 1000; corCep
+===================================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+
+
+02. A press: the level goes up
+==============================
+going up
+
+
+03. The rule deleted: read again - 0 rules; the level does not change any more
+===============================================================================
+DELETE /entities/urn:ngsi-ld:Rule:dim: 204
+0 rules, 0 subscriptions
+stopped
+
+

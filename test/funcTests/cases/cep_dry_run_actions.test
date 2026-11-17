@@ -1,0 +1,122 @@
+#
+# FILE            cep_dry_run_actions.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# /dry-run (dryrun.c) showing each kind of action as it would run - set is in cep_dry_run; here toggle,
+# step, create (with an id, and without: no id made up, no entity named), delete (one, an id, a group).
+#
+--NAME--
+/dry-run shows every kind of action: toggle, step, create (with and without an id), delete (one, an id, a group)
+
+--TAGS--
+cep dryrun action
+
+--INIT--
+cepTestInit
+dryRunKeys > /dev/null
+
+--RUN--
+echo "01. One press, a rule with seven actions; the lights and the logs as entities"
+echo "=============================================================================="
+cepStart --jwks "$CEP_TEST_DIR/jwks.json" --issuer http://editor.test
+TOKEN=$(dryRunToken --claims '{"realm_access": {"roles": ["ngsild-write"]}}')
+RULE='{"id": "urn:ngsi-ld:Rule:all", "type": "Rule",
+       "when": {"json": {"entity": "urn:ngsi-ld:WallSwitch:office", "attribute": "press"}},
+       "then": {"json": [
+         {"entity": "urn:ngsi-ld:Light:a", "toggle": "on"},
+         {"entity": "urn:ngsi-ld:Light:b", "step": {"attribute": "level", "by": 10, "every": "PT1S", "max": 50}},
+         {"create": {"id": "urn:ngsi-ld:Log:mine", "type": "Log", "note": "pressed"}},
+         {"create": {"type": "Log", "note": "pressed"}},
+         {"entity": "urn:ngsi-ld:Log:old", "delete": true},
+         {"delete": "urn:ngsi-ld:Log:older"},
+         {"type": "Log", "q": "note==\"pressed\"", "delete": true}]}}'
+dryRunPost "$TOKEN" "{\"start\": \"2026-11-17T18:00:00Z\", \"for\": \"PT1S\", \"rules\": [$RULE],
+  \"entities\": [{\"id\": \"urn:ngsi-ld:Light:a\", \"type\": \"Light\", \"on\": false},
+                 {\"id\": \"urn:ngsi-ld:Light:b\", \"type\": \"Light\", \"level\": 0},
+                 {\"id\": \"urn:ngsi-ld:Log:old\", \"type\": \"Log\", \"note\": \"pressed\"},
+                 {\"id\": \"urn:ngsi-ld:Log:other\", \"type\": \"Log\", \"note\": \"other\"}],
+  \"events\": [{\"at\": 0, \"entity\": \"urn:ngsi-ld:WallSwitch:office\", \"type\": \"WallSwitch\", \"attribute\": \"press\", \"value\": 1}]}"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. One press, a rule with seven actions; the lights and the logs as entities
+==============================================================================
+POST /dry-run: 200
+{
+  "end": 1000,
+  "fires": [
+    {
+      "actions": [
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:a"
+          ],
+          "toggle": "on"
+        },
+        {
+          "entities": [
+            "urn:ngsi-ld:Light:b"
+          ],
+          "step": {
+            "attribute": "level",
+            "by": 10
+          }
+        },
+        {
+          "create": {
+            "id": "urn:ngsi-ld:Log:mine",
+            "note": "pressed",
+            "type": "Log"
+          },
+          "entities": [
+            "urn:ngsi-ld:Log:mine"
+          ]
+        },
+        {
+          "create": {
+            "note": "pressed",
+            "type": "Log"
+          },
+          "entities": []
+        },
+        {
+          "delete": true,
+          "entities": [
+            "urn:ngsi-ld:Log:old"
+          ]
+        },
+        {
+          "delete": true,
+          "entities": [
+            "urn:ngsi-ld:Log:older"
+          ]
+        },
+        {
+          "delete": true,
+          "entities": [
+            "urn:ngsi-ld:Log:old"
+          ],
+          "q": "note==\"pressed\"",
+          "type": "Log"
+        }
+      ],
+      "at": 0,
+      "entity": "urn:ngsi-ld:WallSwitch:office",
+      "fired": true,
+      "rule": "urn:ngsi-ld:Rule:all",
+      "time": "2026-11-17T18:00:00.000Z"
+    }
+  ],
+  "leftOut": [],
+  "start": "2026-11-17T18:00:00.000Z",
+  "truncated": false
+}
+
+
