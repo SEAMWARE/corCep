@@ -51,6 +51,7 @@ static Item*            queueTail  = NULL;
 
 static CepRules*        rules      = NULL;       // the generation running
 static CepPatterns*     patterns   = NULL;       // its patterns' state - the host's clock
+static bool             stateDirty = false;      // the patterns' state changed since --state was last written
 
 int statsInterval = 10;                          // --stats-interval
 int renewInterval = 3600;                        // --renew-interval
@@ -285,7 +286,8 @@ typedef struct Stepper
   double*          valueV;
 } Stepper;
 
-static Stepper* stepperList = NULL;
+static Stepper* stepperList    = NULL;
+static Stepper* stepperPending = NULL;          // read from --state, waiting for their rules (steppersAdopt)
 
 
 
@@ -467,6 +469,7 @@ static long long steppersRun(CorAlloc* allocP, long long now)
           if (attrsPatch(allocP, sP->idV[ix], bodyP, why, sizeof(why)) == false)
             logLine("rule %s: step - %s", sP->ruleId, why);
           sP->valueV[ix] = v;
+          stateDirty     = true;
         }
       }
 
@@ -483,7 +486,8 @@ static long long steppersRun(CorAlloc* allocP, long long now)
 
     if (done)
     {
-      *prevPP = sP->next;
+      *prevPP    = sP->next;
+      stateDirty = true;
       stepperFree(sP);
       continue;
     }
@@ -756,7 +760,7 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
 //
 // statsFlush - the statistics changed and not written for statsInterval seconds
 //
-static void statsFlush(CorAlloc* allocP)
+static void statsFlush(CorAlloc* allocP, bool force)
 {
   time_t now = time(NULL);
 
@@ -765,7 +769,7 @@ static void statsFlush(CorAlloc* allocP)
     if ((patternsDropped(patterns, sP->id) != sP->droppedWritten) || (patternsDroppedValues(patterns, sP->id) != sP->droppedValuesWritten))
       sP->dirty = true;                          // a drop is news without a fire too
 
-    if ((sP->dirty == true) && (sP->seen == true) && (now - sP->writtenAt >= statsInterval))
+    if ((sP->dirty == true) && (sP->seen == true) && (force || (now - sP->writtenAt >= statsInterval)))
       statsWrite(allocP, sP);
   }
 }
@@ -831,6 +835,7 @@ static void ruleFire(CorAlloc* allocP, CepRule* ruleP, const char* entity)
 //
 static void fireCb(CepRule* ruleP, const char* entity, void* ctx)
 {
+  stateDirty = true;
   ruleFire((CorAlloc*) ctx, ruleP, (entity != NULL) ? entity : "-");
 }
 
@@ -887,6 +892,158 @@ static void eventHandle(CorAlloc* allocP, int sub, char* body)
     if (number)
       v = (vP->type == CorInt) ? (double) vP->value.i : vP->value.f;
     patternsEvent(patterns, rules, n, idP->value.s, number ? &v : NULL, nowMs(), fireCb, allocP);
+    stateDirty = true;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// steppersSave - the steps running, for --state: what each has done so far; what it does (by, bounds, every,
+// until) is the rule's, read again from it after a restart. Times: the wall clock, ms.
+//
+CorNode* steppersSave(CorAlloc* aP, long long nowMono, long long nowWall)
+{
+  long long toWall = nowWall - nowMono;
+  CorNode*  vP     = corTreeArray(aP, "steps");
+
+  for (Stepper* sP = stepperList; sP != NULL; sP = sP->next)
+  {
+    CorNode* oP = corTreeObject(aP, NULL);
+    CorNode* tV = corTreeArray(aP, "targets");
+
+    corTreeChildAdd(oP, corTreeString(aP, "rule", sP->ruleId));
+    corTreeChildAdd(oP, corTreeString(aP, "key", sP->key));
+    corTreeChildAdd(oP, corTreeString(aP, "attribute", sP->attribute));
+    corTreeChildAdd(oP, corTreeInteger(aP, "nextAt", sP->nextAt + toWall));
+    corTreeChildAdd(oP, corTreeInteger(aP, "endAt", sP->endAt + toWall));
+    for (int ix = 0; ix < sP->n; ix++)
+    {
+      CorNode* targetP = corTreeArray(aP, NULL);
+      corTreeChildAdd(targetP, corTreeString(aP, NULL, sP->idV[ix]));
+      corTreeChildAdd(targetP, corTreeFloat(aP, NULL, sP->valueV[ix]));
+      corTreeChildAdd(tV, targetP);
+    }
+    corTreeChildAdd(oP, tV);
+    corTreeChildAdd(vP, oP);
+  }
+
+  return vP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// steppersLoad - the steps saved, kept aside till the rules are read (steppersAdopt); the number read
+//
+int steppersLoad(CorNode* topP, long long nowMono, long long nowWall)
+{
+  long long toMono = nowMono - nowWall;
+  CorNode*  vP     = corTreeLookup(topP, "steps");
+  int       n      = 0;
+
+  for (CorNode* oP = ((vP != NULL) && (vP->type == CorArray)) ? vP->value.head : NULL; oP != NULL; oP = oP->next)
+  {
+    CorNode* ruleP   = corTreeLookup(oP, "rule");
+    CorNode* keyP    = corTreeLookup(oP, "key");
+    CorNode* attrP   = corTreeLookup(oP, "attribute");
+    CorNode* nextP   = corTreeLookup(oP, "nextAt");
+    CorNode* endP    = corTreeLookup(oP, "endAt");
+    CorNode* tV      = corTreeLookup(oP, "targets");
+
+    if ((ruleP == NULL) || (ruleP->type != CorString) || (keyP == NULL) || (keyP->type != CorString) ||
+        (attrP == NULL) || (attrP->type != CorString) || (nextP == NULL) || (nextP->type != CorInt) ||
+        (endP == NULL) || (endP->type != CorInt) || (tV == NULL) || (tV->type != CorArray))
+      continue;
+
+    int targets = 0;
+    for (CorNode* tP = tV->value.head; tP != NULL; tP = tP->next)
+      ++targets;
+
+    Stepper* sP = calloc(1, sizeof(Stepper));
+    if ((sP == NULL) || ((sP->idV = calloc(targets + 1, sizeof(char*))) == NULL) || ((sP->valueV = calloc(targets + 1, sizeof(double))) == NULL))
+    {
+      if (sP != NULL)
+      {
+        free(sP->idV);
+        free(sP);
+      }
+      break;
+    }
+
+    for (CorNode* tP = tV->value.head; tP != NULL; tP = tP->next)
+    {
+      CorNode* idP = (tP->type == CorArray) ? tP->value.head : NULL;
+      CorNode* xP  = (idP != NULL) ? idP->next : NULL;
+
+      if ((xP == NULL) || (idP->type != CorString) || ((xP->type != CorFloat) && (xP->type != CorInt)))
+        continue;
+      sP->idV[sP->n]    = strdup(idP->value.s);
+      sP->valueV[sP->n] = (xP->type == CorInt) ? (double) xP->value.i : xP->value.f;
+      ++sP->n;
+    }
+
+    sP->ruleId     = strdup(ruleP->value.s);
+    sP->key        = strdup(keyP->value.s);
+    sP->attribute  = strdup(attrP->value.s);
+    sP->nextAt     = nextP->value.i + toMono;
+    sP->endAt      = endP->value.i + toMono;
+    sP->untilSub   = -1;
+    sP->next       = stepperPending;
+    stepperPending = sP;
+    ++n;
+  }
+
+  return n;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// steppersAdopt - the steps read from --state go on, with what their rule's step action says now; a rule, or a step
+// of that attribute in it, gone meanwhile: the step stops
+//
+static void steppersAdopt(void)
+{
+  while (stepperPending != NULL)
+  {
+    Stepper*   sP    = stepperPending;
+    CepRule*   ruleP = NULL;
+    CepAction* aP    = NULL;
+
+    stepperPending = sP->next;
+
+    for (int ix = 0; (ix < rules->rules) && (ruleP == NULL); ix++)
+    {
+      if (strcmp(rules->ruleV[ix].id, sP->ruleId) == 0)
+        ruleP = &rules->ruleV[ix];
+    }
+    for (int ix = 0; (ruleP != NULL) && (ix < ruleP->actions) && (aP == NULL); ix++)
+    {
+      CepAction* xP = &ruleP->actionV[ix];
+      if ((xP->kind == CepActionStep) && (strcmp(xP->attribute, sP->attribute) == 0))
+        aP = xP;
+    }
+
+    if (aP == NULL)
+    {
+      logLine("rule %s: step of %s not continued - %s", sP->ruleId, sP->attribute, (ruleP == NULL) ? "the rule is gone" : "the rule steps it no more");
+      stepperFree(sP);
+      continue;
+    }
+
+    sP->untilSub = (aP->until >= 0) ? rules->watchV[ruleP->untilV[aP->until].watch].sub : -1;
+    sP->by       = aP->by;
+    sP->min      = aP->min;
+    sP->max      = aP->max;
+    sP->hasMin   = aP->hasMin;
+    sP->hasMax   = aP->hasMax;
+    sP->everyMs  = aP->everyMs;
+    sP->next     = stepperList;
+    stepperList  = sP;
   }
 }
 
@@ -906,6 +1063,7 @@ static void rulesReload(void)
   rulesFree(rules);
   rules = newP;
   patternsAdopt(patterns, rules, nowMs());
+  stateDirty = true;
 
   Stepper** stepPP = &stepperList;                     // the steps of rules gone stop
   while (*stepPP != NULL)
@@ -924,6 +1082,8 @@ static void rulesReload(void)
       stepperFree(tP);
     }
   }
+
+  steppersAdopt();
 
   //
   // The statistics of the rules running; those of a rule gone (deleted, disabled, left out) are dropped
@@ -972,12 +1132,25 @@ void engineRun(void)
     exit(1);
   }
 
+  stateLoad(patterns);                           // before the first rules: their states found again by id
   rulesReload();
 
   long long renewedAt = nowMs();
+  long long savedAt   = 0;
 
   while (true)
   {
+    //
+    // Stopping (SIGTERM, SIGINT - seen within a second): the state and the statistics written first
+    //
+    if (cepStopping)
+    {
+      stateSave(patterns);
+      statsFlush(&alloc, true);
+      logLine("stopped (signal %d)%s", (int) cepStopping, (stateFile != NULL) ? " - the state written" : "");
+      exit(0);
+    }
+
     //
     // The deadlines passed (absences, superseded fires waiting) fire; the wait: till the next one, a second at most
     //
@@ -1000,7 +1173,14 @@ void engineRun(void)
       next = step;
     long long wait = ((next != 0) && (next - now < 1000)) ? next - now : 1000;
 
-    statsFlush(&alloc);
+    if (stateDirty && (stateFile != NULL) && (nowMs() - savedAt >= 1000))
+    {
+      stateSave(patterns);
+      stateDirty = false;
+      savedAt    = nowMs();
+    }
+
+    statsFlush(&alloc, false);
     corAllocBufferReset(&alloc, true);
 
     Item* iP = dequeue((wait > 0) ? wait : 1);
@@ -1015,7 +1195,7 @@ void engineRun(void)
 
     free(iP->body);
     free(iP);
-    statsFlush(&alloc);
+    statsFlush(&alloc, false);
     corAllocBufferReset(&alloc, true);
   }
 }

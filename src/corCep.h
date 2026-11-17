@@ -252,6 +252,19 @@ extern void         patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch,
 extern long long    patternsTimers(CepPatterns* psP, CepRules* rulesP, long long now, CepFireFn fire, void* ctx);   // the expired ones run; the next deadline, 0: none
 extern long long    patternsDropped(CepPatterns* psP, const char* ruleId);     // partial matches dropped (the bound), since start
 extern long long    patternsDroppedValues(CepPatterns* psP, const char* ruleId);   // window values dropped (the bound), since start
+extern CorNode*     patternsSave(CepPatterns* psP, CorAlloc* aP, long long nowMono, long long nowWall);   // the state, for --state
+extern int          patternsLoad(CepPatterns* psP, CorNode* topP, long long nowMono, long long nowWall);  // before the first adopt; rules read, -1: not a state
+
+//
+// --state (state.c) - the patterns' state over a restart; cepStopping (corCep.c) - a SIGTERM / SIGINT came
+//
+#include <signal.h>                              // sig_atomic_t
+extern const char*            stateFile;                                          // NULL: not kept
+extern volatile sig_atomic_t  cepStopping;                                        // the signal, 0: none
+extern void                   stateLoad(CepPatterns* psP);
+extern CorNode*               steppersSave(CorAlloc* aP, long long nowMono, long long nowWall);   // engine.c - the steps running
+extern int                    steppersLoad(CorNode* topP, long long nowMono, long long nowWall);  // engine.c - before the first rules
+extern bool                   stateSave(CepPatterns* psP);
 
 //
 // /dry-run (dryrun.c) - rules replayed against made-up events; built with DRY_RUN=1 (the default)

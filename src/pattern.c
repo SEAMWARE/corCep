@@ -36,7 +36,12 @@
 //
 #include <stdlib.h>                              // calloc, free, malloc
 #include <string.h>                              // strcmp, strdup, memmove
+#include <stdio.h>                               // snprintf
 #include <time.h>                                // clock_gettime
+
+#include "corAlloc/corAllocStrdup.h"             // corAllocStrdup
+#include "corTree/corTreeBuilder.h"              // corTreeObject, corTreeArray, corTreeInteger, ...
+#include "corTree/corTreeLookup.h"               // corTreeLookup
 
 #include "corCep.h"
 
@@ -44,6 +49,7 @@
 
 #define PARTIALS_MAX  32                         // open matches per partition - the oldest dropped beyond, and counted
 #define WINDOW_MAX    10000                      // values per window and partition - the oldest dropped beyond, and counted
+#define ABSENT_AGAIN  -1                         // an absent deadline that passed while corCep was down: started again by patternsAdopt
 
 
 
@@ -98,6 +104,7 @@ typedef struct Part
   int           partials;
   long long*    timeV;                           // repeat - the times of the last events, oldest first ('min' of them at most)
   int           times;
+  int           timeCap;                         // repeat - timeV's room
   long long     absentAt;                        // absent - the deadline, 0: none
   char*         absentEntity;
   long long     pendingAt;                       // a superseded rule - its fire waiting, 0: none
@@ -310,6 +317,15 @@ void patternsAdopt(CepPatterns* psP, CepRules* rulesP, long long now)
         scheduleSet(psP, ruleP, pP, (time_t) (wallMs(psP, now) / 1000));
     }
 
+    if (ruleP->kind == CepPatternAbsent)          // deadlines passed while corCep was down (patternsLoad): again from now
+    {
+      for (Part* pP = sP->parts; pP != NULL; pP = pP->next)
+      {
+        if (pP->absentAt == ABSENT_AGAIN)
+          pP->absentAt = now + ruleP->forMs;
+      }
+    }
+
     if (fresh && (ruleP->kind == CepPatternAbsent) && (ruleP->partitioned == false))
     {
       Part* pP = partOf(sP, "");
@@ -497,11 +513,18 @@ static bool feedAll(State* sP, CepRule* ruleP, Part* pP, int ev, long long now)
 //
 static bool feedRepeat(CepRule* ruleP, Part* pP, long long now)
 {
-  if (pP->timeV == NULL)
+  if (pP->timeCap < ruleP->min)                  // first time - or a state read back (patternsLoad) with less room
   {
-    pP->timeV = malloc(ruleP->min * sizeof(long long));
-    if (pP->timeV == NULL)
+    long long* tV = realloc(pP->timeV, ruleP->min * sizeof(long long));
+    if (tV == NULL)
       return false;
+    pP->timeV   = tV;
+    pP->timeCap = ruleP->min;
+  }
+  if (pP->times > ruleP->min)                    // a state read back of a rule whose 'min' was larger - the newest kept
+  {
+    memmove(&pP->timeV[0], &pP->timeV[pP->times - ruleP->min], ruleP->min * sizeof(long long));
+    pP->times = ruleP->min;
   }
 
   int kept = 0;
@@ -992,4 +1015,248 @@ long long patternsDroppedValues(CepPatterns* psP, const char* ruleId)
       return sP->droppedValues;
   }
   return 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// The state over a restart (--state, doc/design.md § 6) - JSON:
+//
+//   { "version": 1, "savedAt": <wall ms>,
+//     "rules": [ { "id", "when", "dropped", "droppedValues",
+//                  "parts": [ { "key", "partials": [ [start, step, "seen hex"], ... ], "times": [ ... ],
+//                               "absentAt", "absentEntity", "pendingAt", "pendingEntity",
+//                               "ring": [ [at, value], ... ], "sum", "holding", "windowEntity" } ] } ] }
+//
+// Every time is the WALL clock, ms: the monotonic clock starts again with the host. Not kept: the schedules' next
+// fire (made again from the rule), a rule's state whose 'when' changed meanwhile (patternsAdopt starts it afresh).
+//
+static CorNode* timeNode(CorAlloc* aP, const char* name, long long mono, long long monoToWall)
+{
+  return corTreeInteger(aP, name, mono + monoToWall);
+}
+
+CorNode* patternsSave(CepPatterns* psP, CorAlloc* aP, long long nowMono, long long nowWall)
+{
+  long long  toWall  = nowWall - nowMono;
+  CorNode*   topP    = corTreeObject(aP, NULL);
+  CorNode*   rulesP  = corTreeArray(aP, "rules");
+
+  corTreeChildAdd(topP, corTreeInteger(aP, "version", 1));
+  corTreeChildAdd(topP, corTreeInteger(aP, "savedAt", nowWall));
+
+  for (State* sP = psP->stateList; sP != NULL; sP = sP->next)
+  {
+    CorNode* rP     = corTreeObject(aP, NULL);
+    CorNode* partsP = corTreeArray(aP, "parts");
+
+    corTreeChildAdd(rP, corTreeString(aP, "id", sP->id));
+    corTreeChildAdd(rP, corTreeString(aP, "when", sP->whenText));
+    corTreeChildAdd(rP, corTreeInteger(aP, "dropped", sP->dropped));
+    corTreeChildAdd(rP, corTreeInteger(aP, "droppedValues", sP->droppedValues));
+
+    for (Part* pP = sP->parts; pP != NULL; pP = pP->next)
+    {
+      CorNode* oP = corTreeObject(aP, NULL);
+      corTreeChildAdd(oP, corTreeString(aP, "key", pP->key));
+
+      if (pP->partials > 0)
+      {
+        CorNode* aV = corTreeArray(aP, "partials");
+        for (int ix = 0; ix < pP->partials; ix++)
+        {
+          CorNode* mP = corTreeArray(aP, NULL);
+          char     hex[20];
+
+          snprintf(hex, sizeof(hex), "%llx", pP->partialV[ix].seen);
+          corTreeChildAdd(mP, timeNode(aP, NULL, pP->partialV[ix].start, toWall));
+          corTreeChildAdd(mP, corTreeInteger(aP, NULL, pP->partialV[ix].step));
+          corTreeChildAdd(mP, corTreeString(aP, NULL, corAllocStrdup(aP, hex)));
+          corTreeChildAdd(aV, mP);
+        }
+        corTreeChildAdd(oP, aV);
+      }
+
+      if (pP->times > 0)
+      {
+        CorNode* tV = corTreeArray(aP, "times");
+        for (int ix = 0; ix < pP->times; ix++)
+          corTreeChildAdd(tV, timeNode(aP, NULL, pP->timeV[ix], toWall));
+        corTreeChildAdd(oP, tV);
+      }
+
+      if (pP->absentAt > 0)
+        corTreeChildAdd(oP, timeNode(aP, "absentAt", pP->absentAt, toWall));
+      if (pP->absentEntity != NULL)
+        corTreeChildAdd(oP, corTreeString(aP, "absentEntity", pP->absentEntity));
+      if (pP->pendingAt > 0)
+        corTreeChildAdd(oP, timeNode(aP, "pendingAt", pP->pendingAt, toWall));
+      if (pP->pendingEntity != NULL)
+        corTreeChildAdd(oP, corTreeString(aP, "pendingEntity", pP->pendingEntity));
+
+      if (pP->ring.len > 0)
+      {
+        CorNode* vV = corTreeArray(aP, "ring");
+        for (int ix = 0; ix < pP->ring.len; ix++)
+        {
+          CorNode* sampleP = corTreeArray(aP, NULL);
+          corTreeChildAdd(sampleP, timeNode(aP, NULL, ringAt(&pP->ring, ix)->at, toWall));
+          corTreeChildAdd(sampleP, corTreeFloat(aP, NULL, ringAt(&pP->ring, ix)->v));
+          corTreeChildAdd(vV, sampleP);
+        }
+        corTreeChildAdd(oP, vV);
+        corTreeChildAdd(oP, corTreeFloat(aP, "sum", pP->sum));
+      }
+      if (pP->holding)
+        corTreeChildAdd(oP, corTreeBoolean(aP, "holding", true));
+      if (pP->windowEntity != NULL)
+        corTreeChildAdd(oP, corTreeString(aP, "windowEntity", pP->windowEntity));
+
+      corTreeChildAdd(partsP, oP);
+    }
+
+    corTreeChildAdd(rP, partsP);
+    corTreeChildAdd(rulesP, rP);
+  }
+
+  corTreeChildAdd(topP, rulesP);
+  return topP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// numberOf, longOf, strOf - a saved member; the default when it is absent or of another type
+//
+static double numberOf(CorNode* nP)
+{
+  if (nP == NULL)
+    return 0;
+  if (nP->type == CorInt)
+    return (double) nP->value.i;
+  if (nP->type == CorFloat)
+    return nP->value.f;
+  return 0;
+}
+
+static long long longOf(CorNode* objP, const char* name)
+{
+  CorNode* nP = corTreeLookup(objP, name);
+  return ((nP != NULL) && (nP->type == CorInt)) ? nP->value.i : 0;
+}
+
+static const char* strOf(CorNode* objP, const char* name)
+{
+  CorNode* nP = corTreeLookup(objP, name);
+  return ((nP != NULL) && (nP->type == CorString)) ? nP->value.s : NULL;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// patternsLoad - a saved state, before the first patternsAdopt: each rule's state found again by its id (and kept
+// if its 'when' is the same). A deadline passed while corCep was down: an absent one starts again from now
+// (patternsAdopt), a superseded fire waiting is dropped - fired minutes late it would be worse than not fired.
+// The number of rules' states read; -1: not a state file of this version.
+//
+int patternsLoad(CepPatterns* psP, CorNode* topP, long long nowMono, long long nowWall)
+{
+  long long toMono = nowMono - nowWall;
+  CorNode*  rulesP = corTreeLookup(topP, "rules");
+  int       n      = 0;
+
+  if ((topP == NULL) || (topP->type != CorObject) || (longOf(topP, "version") != 1) || (rulesP == NULL) || (rulesP->type != CorArray))
+    return -1;
+
+  for (CorNode* rP = rulesP->value.head; rP != NULL; rP = rP->next)
+  {
+    const char* id   = strOf(rP, "id");
+    const char* when = strOf(rP, "when");
+    CorNode*    pV   = corTreeLookup(rP, "parts");
+
+    if ((id == NULL) || (when == NULL) || (pV == NULL) || (pV->type != CorArray))
+      continue;
+
+    State* sP = calloc(1, sizeof(State));
+    if (sP == NULL)
+      break;
+    sP->id            = strdup(id);
+    sP->whenText      = strdup(when);
+    sP->dropped       = longOf(rP, "dropped");
+    sP->droppedValues = longOf(rP, "droppedValues");
+
+    for (CorNode* oP = pV->value.head; oP != NULL; oP = oP->next)
+    {
+      const char* key = strOf(oP, "key");
+      Part*       pP  = (key != NULL) ? partOf(sP, key) : NULL;
+
+      if (pP == NULL)
+        continue;
+
+      CorNode* aV = corTreeLookup(oP, "partials");
+      for (CorNode* mP = (aV != NULL) && (aV->type == CorArray) ? aV->value.head : NULL; (mP != NULL) && (pP->partials < PARTIALS_MAX); mP = mP->next)
+      {
+        CorNode* startP = (mP->type == CorArray) ? mP->value.head : NULL;
+        CorNode* stepP  = (startP != NULL) ? startP->next : NULL;
+        CorNode* seenP  = (stepP  != NULL) ? stepP->next  : NULL;
+
+        if ((seenP == NULL) || (startP->type != CorInt) || (stepP->type != CorInt) || (seenP->type != CorString))
+          continue;
+        pP->partialV[pP->partials].start = startP->value.i + toMono;
+        pP->partialV[pP->partials].step  = (int) stepP->value.i;
+        pP->partialV[pP->partials].seen  = strtoull(seenP->value.s, NULL, 16);
+        ++pP->partials;
+      }
+
+      CorNode* tV = corTreeLookup(oP, "times");
+      if ((tV != NULL) && (tV->type == CorArray) && (tV->value.head != NULL))
+      {
+        int times = 0;
+        for (CorNode* tP = tV->value.head; tP != NULL; tP = tP->next)
+          ++times;
+        pP->timeV = malloc(times * sizeof(long long));   // feedRepeat makes room for 'min' when it needs it
+        if (pP->timeV != NULL)
+          pP->timeCap = times;
+        for (CorNode* tP = tV->value.head; (tP != NULL) && (pP->timeV != NULL); tP = tP->next)
+          pP->timeV[pP->times++] = (long long) numberOf(tP) + toMono;
+      }
+
+      long long absentAt  = longOf(oP, "absentAt");
+      long long pendingAt = longOf(oP, "pendingAt");
+
+      if (absentAt != 0)
+        pP->absentAt = (absentAt > nowWall) ? absentAt + toMono : ABSENT_AGAIN;
+      if ((pendingAt != 0) && (pendingAt > nowWall))
+        pP->pendingAt = pendingAt + toMono;
+
+      if (strOf(oP, "absentEntity") != NULL)
+        setStr(&pP->absentEntity, strOf(oP, "absentEntity"));
+      if ((pP->pendingAt != 0) && (strOf(oP, "pendingEntity") != NULL))
+        setStr(&pP->pendingEntity, strOf(oP, "pendingEntity"));
+      if (strOf(oP, "windowEntity") != NULL)
+        setStr(&pP->windowEntity, strOf(oP, "windowEntity"));
+
+      CorNode* vV = corTreeLookup(oP, "ring");
+      for (CorNode* sampleP = (vV != NULL) && (vV->type == CorArray) ? vV->value.head : NULL; sampleP != NULL; sampleP = sampleP->next)
+      {
+        CorNode* atP = (sampleP->type == CorArray) ? sampleP->value.head : NULL;
+        CorNode* vP  = (atP != NULL) ? atP->next : NULL;
+
+        if ((vP == NULL) || (atP->type != CorInt) || (ringPush(&pP->ring, atP->value.i + toMono, numberOf(vP)) == false))
+          break;
+      }
+      pP->sum     = numberOf(corTreeLookup(oP, "sum"));
+      CorNode* hP = corTreeLookup(oP, "holding");
+      pP->holding = (hP != NULL) && (hP->type == CorBoolean) && hP->value.b;
+    }
+
+    sP->next        = psP->stateList;
+    psP->stateList  = sP;
+    ++n;
+  }
+
+  return n;
 }

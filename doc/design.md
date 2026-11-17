@@ -172,8 +172,10 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 
 ## 6. State, restart, failure
 
-- Partial matches and timers: written to `state.cor` (corTree) every second and at stop; a restart within a
-  match's `within` continues it, a later restart drops it.
+- Partial matches, deadlines, window values and steps: written to `--state` (corTree's binary format) at most once
+  a second when they changed, and at stop (SIGTERM); a restart within a match's `within` continues it, a later
+  restart drops it. A deadline passed while down: an absence starts again, a superseded fire is dropped - nothing
+  fires late. A step goes on with what its rule says now. Built: README "State over a restart".
 - The subscriptions: corCep's own (id prefix `urn:ngsi-ld:Subscription:corcep-`); at start the stale ones are
   removed, every 5 min any missing one is made again.
 - The broker away: actions are retried with back-off for `retryFor` (default 30 s), then dropped and counted -
@@ -216,8 +218,8 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 
 | | |
 |---|---|
-| built | events, `where`; any / seq / all / repeat / absent / window; cron / at; `supersedes`; `if` (all / any); set / toggle / step ... until on one entity or a group; Rule statistics; broker auth (`--token-command`, `--broker-cert`); subscriptions renewed; `/dry-run` (the caller's token against `--jwks`; a pure replay - `where`, `if` and groups against the request's entities, corNgsild's q matcher) |
-| to build | `state.cor` (matches, deadlines, windows and steps over a restart); `retryFor` with back-off; a bounded notification queue; the ordered action queue per target; `create` / `delete` actions; `${...}` match values in actions; the author's rights checked per target (section 7) |
+| built | events, `where`; any / seq / all / repeat / absent / window; cron / at; `supersedes`; `if` (all / any); set / toggle / step ... until on one entity or a group; Rule statistics; broker auth (`--token-command`, `--broker-cert`); subscriptions renewed; `/dry-run` (the caller's token against `--jwks`; a pure replay - `where`, `if` and groups against the request's entities, corNgsild's q matcher); `--state` (matches, deadlines, windows and steps over a restart) |
+| to build | `retryFor` with back-off; a bounded notification queue; the ordered action queue per target; `create` / `delete` actions; `${...}` match values in actions; the author's rights checked per target (section 7) |
 | packaging | a version tag and `--version`, a Docker image, the docs, the repo public |
 
 **v1.1** - `cep.so`: the engine as a library, a coraine write-path hook (under its own `COR_FEATURE` flag),

@@ -91,10 +91,8 @@ echo
 
 
 --TEARDOWN--
-for n in 1 2; do
-  [ -f "$CEP_TEST_DIR/cep$n.pid" ] && kill "$(cat "$CEP_TEST_DIR/cep$n.pid")" 2> /dev/null
-done
-true
+cepPidStop "$CEP_TEST_DIR/cep1.pid"
+cepPidStop "$CEP_TEST_DIR/cep2.pid"
 
 --EXPECT--
 01. Two homes, each a switch, a light and a rule; a corCep each - one renewing every 3 s, one never
