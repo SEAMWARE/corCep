@@ -6,7 +6,7 @@ NGSI-LD broker; with coraine it can also run inside the broker.
 
 Status: P1 and P2.1 to P2.5 built (README.md) - events, `where`, the patterns any / seq / all / repeat / absent /
 window, the schedules cron / at, `supersedes`, `if`, set / toggle / step ... until on one entity or a group,
-statistics. Section 8 lists the decisions this note needs.
+statistics. Section 8 lists the decisions, section 9 the releases.
 
 ## 1. What it is for
 
@@ -189,22 +189,40 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
   outside corCep, renewed before it expires and on a 401; corCep never holds the key.
 - A broker whose certificate is its own (a home hub's, self-signed, reached at `localhost`): `--broker-cert` pins
   it - that certificate and no other, instead of the CA store and the host name.
-- A rule acts with corCep's rights, so who may write a Rule entity decides who may act: rules are a protected
-  type in the broker's policy (a user may write rules only over entities they may write themselves - section 8,
-  decision 6).
+- A rule acts with corCep's rights, but only where its author may act: corCep checks the author's rights on each
+  target - when the rule is saved and again when it fires (a group's members change). A target the author may not
+  write is not written; the rule's `lastError` says so. Who may write a Rule entity at all is the broker's normal
+  access control - a Rule is an entity like any other (section 8, decision 6). Works against any broker.
 - Notifications come to a path holding a secret made at start; loopback, or TLS.
 - `http` actions: to an allow-list of hosts only.
 
-## 8. Decisions for KZ
+## 8. Decisions
 
-1. **The pattern language** - SQL:2016 concepts in JSON (this note), or our own smaller vocabulary.
-2. **Rules as entities in the same broker** (this note) or a separate store - the same broker means the same API,
-   the same access control, the same backup.
-3. **The plugin** - build `cep.so` for coraine in v1, or the standalone service only first.
-4. **Single vs double press** - wait `within` before a single press fires (correct, 0.3-0.5 s slower), or fire
-   both. Per rule (`supersedes`) in this note.
-5. **Scope of v1** - proposed: events, `where`, `seq`/`any`/`all`/`repeat`, `absent`, set / toggle / step,
-   group targets, the Rule entity statistics. Windows, schedules, `http` and `notify` in v2.
-6. **Who may write a rule** - any user with write access to the targets, or an admin role only.
-7. **ETSI** - the rule model as an NGSI-LD proposal (private material until decided).
+1. **The pattern language** - SQL:2016 row pattern recognition concepts, written as JSON (this note). Decided
+   2026-11-17: the Seamware team was asked, no one answered; the rules already run on it and the editors write it.
+2. **Rules as entities in the same broker** (this note) - the same API, the same access control, the same backup.
+3. **The plugin** - yes: `cep.so` for coraine as well as the standalone service (decided 2026-11-17) - events from
+   coraine's write path, actions as function calls: faster, and the shape a home hub wants. In v1.1 (section 9).
+4. **Single vs double press** - per rule: `supersedes` (built in P2.2).
+5. **Scope** - section 9 (redrawn 2026-11-17: windows and schedules were built before v1).
+6. **Who may write a rule** - the broker's normal access control for writing the Rule entity; corCep checks the
+   author's rights on every target (section 7). Decided 2026-11-17.
+7. **ETSI** - the rule model as an NGSI-LD proposal: later, not urgent (private material until decided).
 8. **The repo** - `SEAMWARE/corCep`, private until v1 (decided 2026-11-13); licence Apache 2.0, as coraine (KZ 2026-11-15).
+
+## 9. Releases
+
+**v1** - the first public release (the GE application):
+
+| | |
+|---|---|
+| built | events, `where`; any / seq / all / repeat / absent / window; cron / at; `supersedes`; `if` (all / any); set / toggle / step ... until on one entity or a group; Rule statistics; broker auth (`--token-command`, `--broker-cert`); subscriptions renewed |
+| to build | `/dry-run`; `state.cor` (matches, deadlines, windows and steps over a restart); `retryFor` with back-off; a bounded notification queue; the ordered action queue per target; `create` / `delete` actions; `${...}` match values in actions; the author's rights checked per target (section 7) |
+| packaging | a version tag and `--version`, a Docker image, the docs, the repo public |
+
+**v1.1** - `cep.so`: the engine as a library, a coraine write-path hook (under its own `COR_FEATURE` flag),
+`src/` split into the engine and its transport (notifications in, HTTP out).
+
+**v2** - `http` actions (webhooks, an allow-list of hosts); `notify` actions; tumbling windows; a timer wheel,
+if a measurement asks for one; the ETSI proposal. Candidates: windows across entities (the mean of every room),
+rule templates (one rule for every button of a type), a `/metrics` endpoint.
