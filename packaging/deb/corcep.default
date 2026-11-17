@@ -1,0 +1,22 @@
+# /etc/default/corcep - corCep's options, as CORCEP_<OPTION> variables (corCep -u lists them all).
+# After a change: systemctl restart corcep
+
+# The broker - a coraine on this host by default
+CORCEP_BROKER=http://localhost:1026
+
+# The port the broker's notifications come to
+#CORCEP_PORT=7602
+
+# The tenant (default: the broker's default tenant)
+#CORCEP_TENANT=
+
+# A command printing the bearer token sent to the broker - run again before it expires
+#CORCEP_TOKEN_COMMAND=
+
+# The broker's own certificate (PEM) - a self-signed broker reached at localhost
+#CORCEP_BROKER_CERT=
+
+# The authors' rights - the policy decision point, and the keys the rule editor signs rules with
+#CORCEP_PDP=http://localhost:8181/v1/data/policy/main/allow
+#CORCEP_AUTHOR_JWKS=
+#CORCEP_AUTHOR_ISSUER=

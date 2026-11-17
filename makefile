@@ -47,7 +47,7 @@ else
   $(error DRY_RUN must be 1 or 0, not '$(DRY_RUN)')
 endif
 
-CFLAGS      = $(OPT) -Wall -Werror -Wundef -Wno-format-truncation -fstack-protector-all -DCEP_WITH_DRY_RUN=$(DRY_RUN) -I$(COR_LIBS) -MMD -MP $(EXTRA_CFLAGS)
+CFLAGS      = $(OPT) -I$(OBJDIR) -Wall -Werror -Wundef -Wno-format-truncation -fstack-protector-all -DCEP_WITH_DRY_RUN=$(DRY_RUN) -I$(COR_LIBS) -MMD -MP $(EXTRA_CFLAGS)
 
 SOURCES     = src/corCep.c src/broker.c src/rules.c src/subs.c src/listener.c src/engine.c src/pattern.c src/schedule.c src/token.c src/state.c src/sender.c src/vars.c src/keys.c src/author.c $(DRY_RUN_SOURCES)
 OBJDIR      = obj/$(BUILD)
@@ -78,6 +78,27 @@ corCep: $(OBJECTS) $(COR_ARCHIVES)
 $(OBJDIR)/%.o: src/%.c
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+#
+# stack.h - what --version prints: corCep's commit and each cor-lib's, as built (git describe of each checkout;
+# "unknown" where one is no git checkout - a source tarball). Written on every build, replaced only when it changes,
+# so it rebuilds corCep.o only then.
+#
+STACK_REPOS = corCep corBase corLog corAlloc corTree corJson corHash corArgs corHttp corRest corJsonld corNgsild
+
+$(OBJDIR)/corCep.o: $(OBJDIR)/stack.h
+
+$(OBJDIR)/stack.h: FORCE
+	@mkdir -p $(OBJDIR)
+	@{ printf '#define CORCEP_STACK \\\n'; \
+	   for r in $(STACK_REPOS); do \
+	     d=$(COR_LIBS)/$$r; [ $$r = corCep ] && d=.; \
+	     v=$$(git -C $$d describe --always --dirty --abbrev=12 2>/dev/null || echo unknown); \
+	     printf '  "  %-10s %s\\n" \\\n' $$r "$$v"; \
+	   done; printf '  ""\n'; } > $@.tmp
+	@cmp -s $@.tmp $@ && rm -f $@.tmp || mv -f $@.tmp $@
+
+FORCE:
 
 $(COR_ARCHIVES):
 	@echo "missing $@ - corCep builds against sibling checkouts of the cor-libs, built there (make in each), or COR_LIBS=<dir>"
@@ -110,6 +131,6 @@ uninstall:
 clean:
 	rm -rf obj corCep
 
-.PHONY: all test functest install uninstall clean
+.PHONY: all test functest install uninstall clean FORCE
 
 -include $(DEPS)

@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = configure ]; then
+  if ! getent passwd corcep > /dev/null; then
+    adduser --system --group --home /var/lib/corcep --no-create-home --quiet corcep
+  fi
+  install -d -o corcep -g corcep -m 750 /var/lib/corcep
+
+  #
+  # A first install: on at boot, and started; an upgrade: restarted, if it ran (the new binary)
+  #
+  deb-systemd-helper unmask corcep.service > /dev/null || true
+  if deb-systemd-helper --quiet was-enabled corcep.service; then
+    deb-systemd-helper enable corcep.service > /dev/null || true
+  else
+    deb-systemd-helper update-state corcep.service > /dev/null || true
+    [ -n "$2" ] || deb-systemd-helper enable corcep.service > /dev/null || true
+  fi
+
+  if [ -d /run/systemd/system ]; then
+    systemctl --system daemon-reload > /dev/null || true
+    if [ -n "$2" ]; then
+      deb-systemd-invoke try-restart corcep.service > /dev/null || true
+    else
+      deb-systemd-invoke start corcep.service > /dev/null || true
+    fi
+  fi
+fi
+
+exit 0

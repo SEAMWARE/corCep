@@ -22,9 +22,54 @@ each built there:
 ```
 make                  # ./corCep
 make install          # /usr/local/bin/corCep (PREFIX=..., DESTDIR=...)
+./corCep --version    # the version, and the commits it was built from
 ```
 
 `COR_LIBS=<dir>` for cor-libs checked out elsewhere.
+
+`packaging/libs.sh <dir>` clones the cor-libs (their `main`) into `<dir>` and builds them, in order.
+
+`corCep --version` prints the version and the commit of corCep and of each cor-lib it was built from - the libs
+have no releases of their own:
+
+```
+corCep 0.1.0
+  corCep     e4f1ca336bcd
+  corBase    773e6fe8fe2c
+  ...
+```
+
+## Install
+
+**The image** - `quay.io/seamware/corcep:<version>`, amd64 and arm64:
+
+```
+docker run --rm --network host quay.io/seamware/corcep:0.1.0 --broker http://localhost:1026
+```
+
+It runs as the user `corcep`, in `/var/lib/corcep` (mount a volume there for `--state`). Every option can also be
+given as an environment variable, `CORCEP_<OPTION>`: `CORCEP_BROKER`, `CORCEP_PORT`, `CORCEP_TOKEN_COMMAND`, ...
+`docker/Dockerfile` builds it from a checkout: `docker build -f docker/Dockerfile -t corcep .`
+
+**The package** - `corcep`, a .deb for Ubuntu 26.04, 24.04 and Debian 13 (amd64, arm64), from the GitHub release or
+the Seamware apt repository (the one coraine's packages are in - the same key and sources line):
+
+```
+sudo apt install corcep
+```
+
+- `/usr/bin/corCep`; the service `corcep` - enabled and started on install, as the user `corcep`, with
+  `--state /var/lib/corcep/state.cor`; restarted on failure (a broker not up yet).
+- The options in `/etc/default/corcep`, as `CORCEP_<OPTION>` lines - by default `CORCEP_BROKER=http://localhost:1026`,
+  a coraine on the same host. After a change: `sudo systemctl restart corcep`.
+- An upgrade restarts the service; a purge removes the state and the user.
+
+`packaging/deb/build.sh <out>` builds the package in a container of the distribution;
+`packaging/deb/test-install.sh <dir>` installs it in a clean one, runs it, purges it.
+
+**A release** is a tag on `main`, `v<version>` - the version in `src/corCep.h`; `.github/workflows/packages.yml`
+builds and tests both, pushes the image, makes the GitHub release with the packages and adds them to the apt
+repository. A pull request touching the build builds and tests both, pushing nothing.
 
 ## Run
 
