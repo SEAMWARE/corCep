@@ -27,6 +27,10 @@ make install          # /usr/local/bin/corCep (PREFIX=..., DESTDIR=...)
 
 `COR_LIBS=<dir>` for cor-libs checked out elsewhere.
 
+`make libcorcep.a` - the engine alone, as a library: rules, patterns, schedules, conditions, actions, statistics,
+state. It reaches the broker through a `CepTransport` (`src/cepTransport.h`); the corCep binary is it on NGSI-LD over
+HTTP - the base of coraine's in-process plugin to come ([doc/design.md](doc/design.md) § 9).
+
 `packaging/libs.sh <dir>` clones the cor-libs (their `main`) into `<dir>` and builds them, in order.
 
 `corCep --version` prints the version and the commit of corCep and of each cor-lib it was built from - the libs

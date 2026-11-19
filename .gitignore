@@ -5,3 +5,4 @@ __pycache__/
 /coverage/
 /test/funcTests/cases/*.CB.log
 /test/funcTests/cases/*.CP?.log
+/libcorcep.a

@@ -31,6 +31,7 @@
 #include "corTree/corTreeLookup.h"               // corTreeLookup
 
 #include "corCep.h"
+#include "cepTransport.h"
 
 
 
@@ -64,6 +65,8 @@ static CepRules*        rules      = NULL;       // the generation running
 static CepPatterns*     patterns   = NULL;       // its patterns' state - the host's clock
 static CepVars*         vars       = NULL;       // the events' latest values, for ${...} (vars.c)
 static bool             stateDirty = false;      // the patterns' state changed since --state was last written
+
+const CepTransport* cepTransport = NULL;         // the way to the broker (cepTransport.h) - set before engineRun
 
 int statsInterval = 10;                          // --stats-interval
 int renewInterval = 3600;                        // --renew-interval
@@ -305,7 +308,7 @@ static CorNode* targetsGet(CorAlloc* allocP, CepAction* aP, bool values, char* w
     snprintf(path,  sizeof(path),  "/entities/%s", urlEncode(allocP, aP->entity));
     snprintf(query, sizeof(query), "attrs=%s&options=keyValues", urlEncode(allocP, aP->attribute));
 
-    if ((brokerRequest(allocP, CorVerbGet, path, query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL))
+    if ((cepTransport->get(allocP, path, query, &resp) == false) || (resp.status != 200) || (resp.body == NULL))
     {
       brokerFailed(why, whyLen, aP->entity, &resp);
       return NULL;
@@ -318,7 +321,7 @@ static CorNode* targetsGet(CorAlloc* allocP, CepAction* aP, bool values, char* w
   snprintf(query, sizeof(query), "type=%s%s%s&options=keyValues&limit=1000", urlEncode(allocP, aP->type),
            (aP->q != NULL) ? "&q=" : "", (aP->q != NULL) ? urlEncode(allocP, aP->q) : "");
 
-  if ((brokerRequest(allocP, CorVerbGet, "/entities", query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL) || (resp.body->type != CorArray))
+  if ((cepTransport->get(allocP, "/entities", query, &resp) == false) || (resp.status != 200) || (resp.body == NULL) || (resp.body->type != CorArray))
   {
     brokerFailed(why, whyLen, "GET /entities", &resp);
     return NULL;
@@ -346,7 +349,7 @@ static const char* authorOf(const char* ruleId)  // the running rule's signed 'a
 
 static void attrsPatch(CorAlloc* allocP, const char* ruleId, int action, const char* id, CorNode* bodyP)
 {
-  senderPatch(ruleId, action, id, jsonText(allocP, bodyP), authorOf(ruleId));
+  cepTransport->patch(ruleId, action, id, jsonText(allocP, bodyP), authorOf(ruleId));
 }
 
 
@@ -643,7 +646,7 @@ static bool entityCreate(CorAlloc* allocP, CepRule* ruleP, int action, CepAction
       corTreeChildAdd(bodyP, property(allocP, vP->name, vP));
   }
 
-  senderCreate(ruleP->id, action, id, jsonText(allocP, bodyP), ruleP->author);
+  cepTransport->create(ruleP->id, action, id, jsonText(allocP, bodyP), ruleP->author);
   return true;
 }
 
@@ -686,7 +689,7 @@ static bool actionRun(CorAlloc* allocP, CepRule* ruleP, int action, CepAction* a
 
     if (aP->kind == CepActionDelete)
     {
-      senderDelete(ruleP->id, action, idP->value.s, ruleP->author);
+      cepTransport->del(ruleP->id, action, idP->value.s, ruleP->author);
       continue;
     }
 
@@ -729,7 +732,7 @@ static bool condHolds(CorAlloc* allocP, CepRule* ruleP, CepCondition* cP)
   snprintf(query, sizeof(query), "type=%s%s%s&q=%s&options=keyValues&limit=1", urlEncode(allocP, cP->type),
            (cP->entity != NULL) ? "&id=" : "", (cP->entity != NULL) ? urlEncode(allocP, cP->entity) : "", urlEncode(allocP, cP->q));
 
-  if ((brokerRequest(allocP, CorVerbGet, "/entities", query, NULL, &resp) == false) || (resp.status != 200) || (resp.body == NULL) || (resp.body->type != CorArray))
+  if ((cepTransport->get(allocP, "/entities", query, &resp) == false) || (resp.status != 200) || (resp.body == NULL) || (resp.body->type != CorArray))
   {
     char why[512];
     brokerFailed(why, sizeof(why), "GET /entities", &resp);
@@ -923,7 +926,7 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
   CepResponse resp;
 
   snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(allocP, sP->id));
-  if ((brokerRequest(allocP, CorVerbPost, path, NULL, bodyP, &resp) == false) || ((resp.status != 204) && (resp.status != 404)))
+  if ((cepTransport->statsPost(allocP, path, bodyP, &resp) == false) || ((resp.status != 204) && (resp.status != 404)))
     logLine("rule %s: its statistics not written - %s", sP->id, (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
 
   sP->dirty     = false;
@@ -1404,7 +1407,7 @@ static void rulesReload(void)
   reloadAt      = 0;
   reloadAfterMs = 0;
 
-  subsApply(newP);
+  cepTransport->watchesApply(newP);
   rulesFree(rules);
   rules = newP;
   patternsAdopt(patterns, rules, nowMs());
@@ -1495,7 +1498,7 @@ void engineRun(void)
     //
     if (cepStopping)
     {
-      int left = senderDrain(2000);              // the PATCHes made go out first - 2 s at most
+      int left = cepTransport->drain(2000);              // the PATCHes made go out first - 2 s at most
       if (left > 0)
         logLine("stopping: %d action%s not sent", left, (left == 1) ? "" : "s");
       stateSave(patterns);
@@ -1515,7 +1518,7 @@ void engineRun(void)
     if ((renewInterval > 0) && (now - renewedAt >= (long long) renewInterval * 1000))
     {
       renewedAt = now;
-      if (subsRenew() == true)
+      if (cepTransport->watchesRenew() == true)
         rulesReload();
     }
 

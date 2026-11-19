@@ -27,6 +27,7 @@
 #include "corRest/corRestClient.h"               // corRestClientInit, corRestClientTlsPinSet
 
 #include "corCep.h"
+#include "cepTransport.h"
 #include "stack.h"                              // CORCEP_STACK - made by the makefile
 
 
@@ -35,8 +36,6 @@
 //
 // Globals
 //
-CepSession cep;
-
 static char* brokerArg    = NULL;
 static char* tenantArg    = NULL;
 static char* tokenEnvArg  = NULL;
@@ -56,8 +55,6 @@ static char* authorJwksArg = NULL;
 static char* authorIssuerArg = NULL;
 static char* stateArg     = NULL;
 static int   retryForArg  = 30;
-
-volatile sig_atomic_t cepStopping = 0;
 
 
 
@@ -91,30 +88,6 @@ static CorArg options[] =
   { "--author-issuer", "-ai", CorArgString, &authorIssuerArg, CorArgOpt, NULL, NULL,  NULL,        "with --pdp: the iss a rule's 'author' must have - the rule editor's" },
   CORARGS_END
 };
-
-
-
-// -----------------------------------------------------------------------------
-//
-// logLine - stderr, a timestamp first
-//
-void logLine(const char* fmt, ...)
-{
-  struct timespec ts;
-  struct tm       tm;
-  char            stamp[32];
-  va_list         args;
-
-  clock_gettime(CLOCK_REALTIME, &ts);
-  localtime_r(&ts.tv_sec, &tm);
-  strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm);
-
-  va_start(args, fmt);
-  fprintf(stderr, "%s.%03ld ", stamp, ts.tv_nsec / 1000000);
-  vfprintf(stderr, fmt, args);
-  fputc('\n', stderr);
-  va_end(args);
-}
 
 
 
@@ -329,6 +302,7 @@ int main(int argC, char* argV[])
     return 1;
   }
 
+  cepTransport = &transportHttp;                 // NGSI-LD over HTTP (transportHttp.c)
   engineRun();
   return 0;
 }

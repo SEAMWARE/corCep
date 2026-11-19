@@ -331,5 +331,6 @@ extern char* tokenGet(CorAlloc* allocP);
 extern bool  tokenRefused(void);
 
 extern void logLine(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+extern void (*cepLogHook)(const char* line);    // util.c - NULL: logLine writes stderr; else the host's log gets the line
 
 #endif  // CORCEP_CORCEP_H_
