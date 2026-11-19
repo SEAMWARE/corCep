@@ -11,7 +11,7 @@
 /dry-run: a replay - supersedes and 'within' on the replay's clock, 'where', 'if', groups, absent, window, cron
 
 --TAGS--
-cep dryrun
+cep dryrun standalone
 
 --INIT--
 cepTestInit

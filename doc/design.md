@@ -208,6 +208,18 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 1. **The pattern language** - SQL:2016 row pattern recognition concepts, written as JSON (this note). Decided
    2026-11-17: the Seamware team was asked, no one answered; the rules already run on it and the editors write it.
 2. **Rules as entities in the same broker** (this note) - the same API, the same access control, the same backup.
+   Amended 2026-11-19 (KZ), for 0.2: in the data tenant a rule leaks into what doesn't name a type (`q` and `attrs`
+   without `type`, a geo-query on a rule's `location`, `/types`, `/attributes`, subscriptions without a type). The
+   rules move to a tenant of their own, `--rules-tenant` (default `cep`), reached with the plain `NGSILD-Tenant`
+   header. In coraine it is a reserved tenant: a database prefix of its own, reachable only in process (the plugin),
+   from 127.0.0.1 without auth, or with an operator role - for anyone else a 404 NonexistentTenant; left out of
+   tenant listings and federation. Against another broker it is an ordinary tenant.
+   A rule is **omnipresent** by default - it runs in every tenant, new ones too - unless it has an attribute `tenant`
+   (a String, or an Array of String). An event in a tenant is matched, counted and acted on in that tenant only (the
+   pattern state is per tenant; actions and conditions in the event's tenant); the watches are subscribed in every
+   tenant a rule applies to. corCep learns the tenants from coraine (in process, or its admin API); against another
+   broker, `--tenants`. Writing a rule is then a right over every tenant; with `--pdp`, every action is still checked
+   against the author's rights in the tenant it acts in.
 3. **The plugin** - yes: `cep.so` for coraine as well as the standalone service (decided 2026-11-17) - events from
    coraine's write path, actions as function calls: faster, and the shape a home hub wants. In v1.1 (section 9).
 4. **Single vs double press** - per rule: `supersedes` (built in P2.2).
@@ -237,7 +249,8 @@ with NGSI-LD over HTTP (`src/transportHttp.c`). Step 2 done (2026-11-19), with n
 picks the events, after the response, and hands them over without HTTP. The requests are still HTTP to 127.0.0.1
 (phase A); an in-process request entry in `BridgeBroker` (phase B) only if a measurement asks for it. The plugin's
 close stops every thread of its own (the engine, the sender, the key refresh) and frees what they held: coraine
-unloads it next.
+unloads it next. Step 4 done (2026-11-19): the functional tests run in both forms (`make functest-both`; the plugin
+form under valgrind too, `make valgrind-plugin`), and coraine's CI runs the plugin form against the coraine it built.
 
 **v2** - `http` actions (webhooks, an allow-list of hosts); `notify` actions; tumbling windows; a timer wheel,
 if a measurement asks for one; the ETSI proposal. Candidates: windows across entities (the mean of every room),

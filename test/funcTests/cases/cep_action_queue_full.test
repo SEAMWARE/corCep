@@ -46,6 +46,10 @@ echo "==========================================================================
 echo "$L 0" > "$FAIL"
 for i in $(seq 1 110); do attrSet $SW press $i; done
 firedAwait level 110 20
+for ((i = 0; i < 50 * CEP_WAIT_FACTOR; i++)); do       # the sender logs its drops on its own thread - the last one may follow the fire
+  [ "$(grep -c "dropped - 100 waiting for it already" "$CEP_TEST_DIR/corCep.log")" -ge 10 ] && break
+  sleep 0.1
+done
 grep -c "dropped - 100 waiting for it already" "$CEP_TEST_DIR/corCep.log"
 sleep 0.5
 echo "droppedActions: $(ruleAttr droppedActions)"

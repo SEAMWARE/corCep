@@ -17,7 +17,7 @@
 subscriptions renewed (--renew-interval): an owner the broker keeps only a while (24 h on a hub) stops no rule
 
 --TAGS--
-cep auth
+cep auth standalone
 
 --INIT--
 cepTestInit

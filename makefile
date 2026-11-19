@@ -104,8 +104,39 @@ PIC_DIR     = obj/$(BUILD)-pic
 PLUGIN_SOURCES = $(ENGINE_SOURCES) src/cepPlugin.c src/transportHttp.c src/broker.c src/subs.c src/token.c src/sender.c
 PLUGIN_OBJECTS = $(PLUGIN_SOURCES:src/%.c=$(PIC_DIR)/%.o)
 
-cep.so: $(PLUGIN_OBJECTS)
+$(PIC_DIR)/cep.so: $(PLUGIN_OBJECTS)
 	$(CC) $(EXTRA_LDFLAGS) -shared -o $@ $(PLUGIN_OBJECTS) -lpthread -lm
+
+cep.so: $(PIC_DIR)/cep.so
+	cp $< $@
+
+#
+# The plugin targets corLibs' umbrella calls - corCep is a plugin repo there (make -C corLibs install puts cep.so
+# beside the other bridges; the coraine image is built that way). plugin-<x> for its <x>: all, install, i, di, cdi, ci,
+# debug, clean. BUILD as the umbrella's (release; debug for di, cdi, debug).
+#
+PLUGIN_DIR ?= /opt/seamware/plugins/bridge
+
+plugin-all: $(PIC_DIR)/cep.so
+
+plugin-install plugin-i: $(PIC_DIR)/cep.so
+	mkdir -p $(DESTDIR)$(PLUGIN_DIR)
+	cp -p $< $(DESTDIR)$(PLUGIN_DIR)/.cep.so.new && mv -f $(DESTDIR)$(PLUGIN_DIR)/.cep.so.new $(DESTDIR)$(PLUGIN_DIR)/cep.so
+
+plugin-debug:
+	$(MAKE) BUILD=debug obj/debug-pic/cep.so
+
+plugin-di:
+	$(MAKE) BUILD=debug plugin-install
+
+plugin-cdi: plugin-clean
+	$(MAKE) BUILD=debug plugin-install
+
+plugin-ci: plugin-clean
+	$(MAKE) plugin-install
+
+plugin-clean:
+	rm -rf obj/release-pic obj/debug-pic obj/coverage-pic cep.so
 
 $(PIC_DIR)/%.o: src/%.c
 	@mkdir -p $(PIC_DIR)
@@ -154,6 +185,31 @@ CORTEST_ARGS ?=
 functest: corCep
 	test/funcTests/broker.sh up
 	$(CORTEST) $(CORTEST_ARGS); rc=$$?; test/funcTests/broker.sh down; exit $$rc
+
+#
+# functest-plugin - the same tests, corCep as cep.so inside a native coraine (CEP_PLUGIN=1: the coraine installed,
+# its plugins from /opt/seamware/plugins - see test/funcTests/corTestFunctions.sh). The tests of the standalone only
+# (/dry-run, the notification port: --TAGS-- standalone) are left out. functest-both: both forms, one after the other.
+#
+PLUGIN_TEST_PORT ?= 4072
+PLUGIN_TEST_RUN  ?= /tmp/corcep-plugin
+
+functest-plugin: cep.so
+	CEP_PLUGIN=1 CEP_BROKER_PORT=$(PLUGIN_TEST_PORT) CEP_PLUGIN_RUN=$(PLUGIN_TEST_RUN) $(CORTEST) --skip-tags standalone $(CORTEST_ARGS); rc=$$?; \
+	  [ -f $(PLUGIN_TEST_RUN)/coraine.pid ] && kill $$(cat $(PLUGIN_TEST_RUN)/coraine.pid) 2>/dev/null; exit $$rc
+
+functest-both: functest functest-plugin
+
+#
+# valgrind-plugin - the plugin form under valgrind (corTest --vt): the coraine corCep is in runs under it, with a debug
+# cep.so (obj/debug-pic/cep.so); a test fails on a definite or indirect leak, or an error - coraine's or corCep's.
+# The run's directory is kept from run to run (plugins, pid, log); each test's database is its own.
+#
+valgrind-plugin:
+	$(MAKE) BUILD=debug obj/debug-pic/cep.so
+	CEP_PLUGIN=1 CEP_PLUGIN_SO=$(CURDIR)/obj/debug-pic/cep.so CEP_BROKER_PORT=$(PLUGIN_TEST_PORT) CEP_PLUGIN_RUN=$(PLUGIN_TEST_RUN) \
+	  $(CORTEST) --vt --skip-tags standalone $(CORTEST_ARGS); rc=$$?; \
+	  [ -f $(PLUGIN_TEST_RUN)/coraine.pid ] && kill $$(cat $(PLUGIN_TEST_RUN)/coraine.pid) 2>/dev/null; exit $$rc
 
 test: functest
 
@@ -208,6 +264,6 @@ uninstall:
 clean:
 	rm -rf obj corCep libcorcep.a cep.so coverage
 
-.PHONY: all libcorcep.a test functest coverage valgrind install uninstall clean FORCE
+.PHONY: all libcorcep.a test functest functest-plugin functest-both valgrind-plugin plugin-all plugin-install plugin-i plugin-debug plugin-di plugin-cdi plugin-ci plugin-clean coverage valgrind install uninstall clean FORCE
 
 -include $(DEPS)

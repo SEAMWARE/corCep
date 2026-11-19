@@ -89,6 +89,8 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                 status, rbody, rheaders = r.status, r.read(), r.getheaders()
         except urllib.error.HTTPError as e:
             status, rbody, rheaders = e.code, e.read(), e.headers.items()
+        except (urllib.error.URLError, OSError):   # the broker down - restarted (the plugin form's cepStart, cepStop)
+            status, rbody, rheaders = 502, b"", []
 
         if entity is not None:
             self.log(entity, body, status)

@@ -14,7 +14,7 @@
 The author's rights: signed rules only, every request asked of the PDP - a no not sent, a PDP down waited for
 
 --TAGS--
-cep author pdp
+cep author pdp standalone
 
 --INIT--
 cepTestInit

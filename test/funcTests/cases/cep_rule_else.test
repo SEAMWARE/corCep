@@ -12,7 +12,7 @@
 'else': one 'if' asked, then exactly one branch - then or else; firedElse; else without if left out; /dry-run
 
 --TAGS--
-cep rule else
+cep rule else standalone
 
 --INIT--
 cepTestInit

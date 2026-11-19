@@ -22,7 +22,7 @@
 broker auth: --broker-cert pins the hub's own certificate; --token-command renews the token, and on a 401
 
 --TAGS--
-cep auth
+cep auth standalone
 
 --INIT--
 cepTestInit

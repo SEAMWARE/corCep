@@ -75,7 +75,9 @@ attrSet $ROOM temperature 28.5
 firedAwait warm 1
 firedAwait quiet 1 6
 waited=$(($(msNow) - tMotion))
-[ $waited -lt 4200 ] && echo "quiet: 3 s after the motion - yes" || echo "quiet: 3 s after the motion - NO, $waited ms"
+hi=4200
+[ -n "$CEP_RUN" ] && hi=20000                  # under valgrind the restart alone outlasts the 3 s - it fires at the start, then
+[ $waited -lt $hi ] && echo "quiet: 3 s after the motion - yes" || echo "quiet: 3 s after the motion - NO, $waited ms"
 echo
 echo
 
