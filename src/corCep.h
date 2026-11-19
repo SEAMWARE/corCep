@@ -60,6 +60,7 @@ extern void  brokerFailed(char* why, int whyLen, const char* what, CepResponse* 
 // The actions' PATCHes (sender.c) - a queue per target, a thread, retried for --retry-for
 //
 extern bool  senderStart(int retryForS);
+extern void  senderStop(void);                // cep.so's close: the thread ended, the queues freed
 // author: the rule's signed 'author' (author.c), NULL: not checked - the PDP asked before each request goes out
 extern void  senderPatch(const char* ruleId, int action, const char* entity, const char* body, const char* author);   // action 0: a step
 extern void  senderCreate(const char* ruleId, int action, const char* entity, const char* body, const char* author);  // POST /entities
@@ -252,9 +253,11 @@ extern int  statsInterval;                                    // seconds between
 extern int  renewInterval;                                    // seconds between two renewals of the subscriptions (0: never)
 extern bool subsInit(void);                                   // stale ones removed, the Rule subscription made
 extern bool subsApply(CepRules* rulesP);                      // one per watch, the old ones replaced
+extern void subsFree(void);                                   // cep.so's close: the table freed
 extern bool subsRenew(void);                                  // all renewed (their owner); true: one was gone - read the rules again
 extern bool listenerStart(void);                              // the notification server, its own thread
-extern void engineRun(void);                                  // the events, one at a time - never returns
+extern void engineRun(void);                                  // the events, one at a time - till a stop (cepStopping): exit(0), or return (cepExitOnStop false)
+extern void engineQueueFree(void);                            // a plugin's close, after senderStop: what still waits freed
 extern void engineQueue(const char* which, const char* body, int bodyLen);   // from the listener / sender threads; full: the oldest events dropped
 extern int  queueMax;                                                       // --queue-max
 
@@ -296,6 +299,7 @@ extern bool      varsAction(CorAlloc* allocP, CepVars* vP, CepPatterns* psP, Cep
 #include <signal.h>                              // sig_atomic_t
 extern const char*            stateFile;                                          // NULL: not kept
 extern volatile sig_atomic_t  cepStopping;                                        // the signal, 0: none
+extern bool                   cepExitOnStop;                                      // util.c - true: the stop exits the process; false (a plugin): engineRun returns
 extern void                   stateLoad(CepPatterns* psP);
 extern CorNode*               steppersSave(CorAlloc* aP, long long nowMono, long long nowWall);   // engine.c - the steps running
 extern int                    steppersLoad(CorNode* topP, long long nowMono, long long nowWall);  // engine.c - before the first rules
@@ -310,6 +314,7 @@ extern bool dryRunInit(const char* jwks, const char* issuer, const char* audienc
 //
 // The keys (keys.c) - --jwks and --author-jwks, one set; the author's rights (author.c) - --pdp
 //
+extern void  keysStop(void);                  // cep.so's close: the refresh thread ended
 extern bool  keysInit(const char* jwks, const char* authorJwks, int refreshS, char* why, int whyLen);
 extern void  keysRefreshNow(void);
 extern bool  authorInit(const char* pdp, const char* issuer, char* why, int whyLen);

@@ -78,6 +78,9 @@ static pthread_cond_t   emptyCond   = PTHREAD_COND_INITIALIZER;
 static Target*          targetList  = NULL;
 static int              waiting     = 0;         // requests in all the queues, the one out included
 static long long        retryForMs  = 30000;
+static bool             stopping    = false;  // senderStop: the thread ends
+static pthread_t        senderTid;
+static bool             senderUp    = false;
 
 
 
@@ -278,7 +281,7 @@ static void* senderThread(void* arg)
   corAllocBufferInit(&alloc, buf, sizeof(buf), 64 * 1024, NULL, "corCep sender");
 
   pthread_mutex_lock(&mutex);
-  while (true)
+  while (stopping == false)
   {
     long long dueAt = 0;
     Target*   tP    = nextDue(&dueAt);
@@ -416,6 +419,8 @@ static void* senderThread(void* arg)
     pthread_mutex_lock(&mutex);
   }
 
+  pthread_mutex_unlock(&mutex);
+  corAllocBufferReset(&alloc, false);
   return NULL;
 }
 
@@ -432,8 +437,46 @@ bool senderStart(int retryForS)
   retryForMs = (long long) retryForS * 1000;
   if (pthread_create(&tid, NULL, senderThread, NULL) != 0)
     return false;
-  pthread_detach(tid);
+  senderTid = tid;
+  senderUp  = true;
   return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// senderStop - the thread ended, what still waits freed (cep.so's close: the plugin is unloaded after it; the
+// standalone just exits). After senderDrain.
+//
+void senderStop(void)
+{
+  if (senderUp == false)
+    return;
+
+  pthread_mutex_lock(&mutex);
+  stopping = true;
+  pthread_cond_broadcast(&cond);
+  pthread_mutex_unlock(&mutex);
+
+  pthread_join(senderTid, NULL);
+  senderUp = false;
+
+  while (targetList != NULL)
+  {
+    Target* tP = targetList;
+    targetList = tP->next;
+
+    while (tP->head != NULL)
+    {
+      Patch* pP = tP->head;
+      tP->head  = pP->next;
+      patchFree(pP);
+    }
+    free(tP->id);
+    free(tP);
+  }
+  waiting = 0;
 }
 
 

@@ -6,3 +6,4 @@ __pycache__/
 /test/funcTests/cases/*.CB.log
 /test/funcTests/cases/*.CP?.log
 /libcorcep.a
+/cep.so

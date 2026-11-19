@@ -1468,6 +1468,70 @@ static void rulesReload(void)
 
 // -----------------------------------------------------------------------------
 //
+// engineFree - what the engine holds, freed once it has stopped: a plugin's host goes on, and unloads it
+//
+static void engineFree(CorAlloc* allocP)
+{
+  if (rules != NULL)
+    rulesFree(rules);
+  rules = NULL;
+
+  if (patterns != NULL)
+    patternsFree(patterns);
+  patterns = NULL;
+
+  if (vars != NULL)
+    varsFree(vars);
+  vars = NULL;
+
+  for (Stepper** listPP = &stepperList; listPP != NULL; listPP = (listPP == &stepperList) ? &stepperPending : NULL)
+  {
+    while (*listPP != NULL)
+    {
+      Stepper* sP = *listPP;
+      *listPP     = sP->next;
+      stepperFree(sP);
+    }
+  }
+
+  while (statsList != NULL)
+  {
+    Stats* sP = statsList;
+    statsList = sP->next;
+    free(sP->id);
+    free(sP);
+  }
+
+  corAllocBufferReset(allocP, false);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// engineQueueFree - what still waits for the engine, once it has stopped: last, after the sender's stop (its
+// "action" reports come till then)
+//
+void engineQueueFree(void)
+{
+  pthread_mutex_lock(&queueMutex);
+  while (queueHead != NULL)
+  {
+    Item* iP  = queueHead;
+    queueHead = iP->next;
+    free(iP->body);
+    free(iP);
+  }
+  queueTail   = NULL;
+  queueEvents = 0;
+  queueBytes  = 0;
+  pthread_mutex_unlock(&queueMutex);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // engineRun -
 //
 void engineRun(void)
@@ -1504,7 +1568,10 @@ void engineRun(void)
       stateSave(patterns);
       statsFlush(&alloc, true);
       logLine("stopped (signal %d)%s", (int) cepStopping, (stateFile != NULL) ? " - the state written" : "");
-      exit(0);
+      if (cepExitOnStop)
+        exit(0);
+      engineFree(&alloc);
+      return;                                    // a plugin's engine: its host goes on
     }
 
     //

@@ -29,6 +29,7 @@
 //
 CepSession            cep;
 volatile sig_atomic_t cepStopping = 0;
+bool                  cepExitOnStop = true;                     // the standalone: exit(0) once stopped; a plugin: engineRun returns
 void                  (*cepLogHook)(const char* line) = NULL;   // NULL: stderr, a timestamp first (corCep.h)
 
 
