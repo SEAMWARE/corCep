@@ -29,52 +29,6 @@
 
 // -----------------------------------------------------------------------------
 //
-// urlEncode - a path segment or a query value: everything but RFC 3986's unreserved characters escaped
-//
-char* urlEncode(CorAlloc* allocP, const char* s)
-{
-  static const char hex[] = "0123456789ABCDEF";
-  int   len  = strlen(s);
-  char* out  = corAlloc(allocP, len * 3 + 1);
-  char* p    = out;
-
-  for (const unsigned char* c = (const unsigned char*) s; *c != 0; c++)
-  {
-    if (((*c >= 'a') && (*c <= 'z')) || ((*c >= 'A') && (*c <= 'Z')) || ((*c >= '0') && (*c <= '9')) ||
-        (*c == '-') || (*c == '.') || (*c == '_') || (*c == '~'))
-      *p++ = *c;
-    else
-    {
-      *p++ = '%';
-      *p++ = hex[*c >> 4];
-      *p++ = hex[*c & 0xF];
-    }
-  }
-  *p = 0;
-
-  return out;
-}
-
-
-
-// -----------------------------------------------------------------------------
-//
-// jsonText - a tree as JSON text, in allocP
-//
-char* jsonText(CorAlloc* allocP, CorNode* nodeP)
-{
-  CorJson json;
-  corJsonCreate(&json, allocP);
-
-  char* text = corAlloc(allocP, corJsonRenderSize(&json, nodeP) + 1);
-  corJsonRender(&json, nodeP, text);
-  return text;
-}
-
-
-
-// -----------------------------------------------------------------------------
-//
 // requestOnce - <broker>/ngsi-ld/v1<path>[?query], bodyP rendered as JSON; the answer parsed
 //
 static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, const char* body, CepResponse* respP)
@@ -200,23 +154,4 @@ bool brokerRequestText(CorAlloc* allocP, CorRestVerb verb, const char* path, con
 bool brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP)
 {
   return brokerRequestText(allocP, verb, path, query, (bodyP != NULL) ? jsonText(allocP, bodyP) : NULL, respP);
-}
-
-
-
-// -----------------------------------------------------------------------------
-//
-// nonexistentTenant - the broker's answer is 404 NonexistentTenant: the tenant has nothing in it yet
-//
-// NGSI-LD makes a tenant when the first entity, subscription or registration is created in it; until then a
-// GET in it is this error. For corCep that is "nothing there", not a failure: it starts on a fresh tenant.
-//
-bool nonexistentTenant(CepResponse* respP)
-{
-  if ((respP->status != 404) || (respP->body == NULL))
-    return false;
-
-  CorNode* typeP = corTreeLookup(respP->body, "type");
-
-  return (typeP != NULL) && (typeP->type == CorString) && (strstr(typeP->value.s, "NonexistentTenant") != NULL);
 }

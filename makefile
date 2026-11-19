@@ -52,9 +52,19 @@ endif
 
 CFLAGS      = $(OPT) -I$(OBJDIR) -Wall -Werror -Wundef -Wno-format-truncation -fstack-protector-all -DCEP_WITH_DRY_RUN=$(DRY_RUN) -I$(COR_LIBS) -MMD -MP $(EXTRA_CFLAGS)
 
-SOURCES     = src/corCep.c src/broker.c src/rules.c src/subs.c src/listener.c src/engine.c src/pattern.c src/schedule.c src/token.c src/state.c src/sender.c src/vars.c src/keys.c src/author.c $(DRY_RUN_SOURCES)
+#
+# The engine - libcorcep.a: rules, patterns, schedules, conditions, actions, statistics, state, ${...}, the author's
+# rights. It reaches the broker through a CepTransport (src/cepTransport.h).
+# The standalone corCep - the engine on NGSI-LD over HTTP: main, the requests, the subscriptions and their
+# listener, the actions' queues, the token, /dry-run.
+#
+ENGINE_SOURCES = src/engine.c src/rules.c src/pattern.c src/schedule.c src/state.c src/vars.c src/keys.c src/author.c src/util.c
+CEP_SOURCES    = src/corCep.c src/transportHttp.c src/broker.c src/subs.c src/listener.c src/token.c src/sender.c $(DRY_RUN_SOURCES)
+SOURCES        = $(ENGINE_SOURCES) $(CEP_SOURCES)
 OBJDIR      = obj/$(BUILD)
 OBJECTS     = $(SOURCES:src/%.c=$(OBJDIR)/%.o)
+ENGINE_OBJECTS = $(ENGINE_SOURCES:src/%.c=$(OBJDIR)/%.o)
+CEP_OBJECTS    = $(CEP_SOURCES:src/%.c=$(OBJDIR)/%.o)
 DEPS        = $(OBJECTS:.o=.d)
 
 #
@@ -75,8 +85,15 @@ LIBS        = -Wl,--start-group $(COR_ARCHIVES) -Wl,--end-group -lssl -lcrypto -
 
 all: corCep
 
-corCep: $(OBJECTS) $(COR_ARCHIVES)
-	$(CC) $(EXTRA_LDFLAGS) -o $@ $(OBJECTS) $(LIBS)
+corCep: $(CEP_OBJECTS) $(OBJDIR)/libcorcep.a $(COR_ARCHIVES)
+	$(CC) $(EXTRA_LDFLAGS) -o $@ $(CEP_OBJECTS) $(OBJDIR)/libcorcep.a $(LIBS)
+
+$(OBJDIR)/libcorcep.a: $(ENGINE_OBJECTS)
+	rm -f $@
+	ar rcs $@ $(ENGINE_OBJECTS)
+
+libcorcep.a: $(OBJDIR)/libcorcep.a
+	cp $< $@
 
 $(OBJDIR)/%.o: src/%.c
 	@mkdir -p $(OBJDIR)
@@ -162,8 +179,8 @@ valgrind:
 	test/funcTests/broker.sh up
 	CEP_BIN=$(CURDIR)/obj/debug/corCep $(CORTEST) --vt $(CORTEST_ARGS); rc=$$?; test/funcTests/broker.sh down; exit $$rc
 
-$(OBJDIR)/corCep: $(OBJECTS) $(COR_ARCHIVES)
-	$(CC) $(EXTRA_LDFLAGS) $(if $(filter coverage,$(BUILD)),--coverage) -o $@ $(OBJECTS) $(LIBS)
+$(OBJDIR)/corCep: $(CEP_OBJECTS) $(OBJDIR)/libcorcep.a $(COR_ARCHIVES)
+	$(CC) $(EXTRA_LDFLAGS) $(if $(filter coverage,$(BUILD)),--coverage) -o $@ $(CEP_OBJECTS) $(OBJDIR)/libcorcep.a $(LIBS)
 
 install: corCep
 	install -d $(DESTDIR)$(PREFIX)/bin
@@ -173,8 +190,8 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/corCep
 
 clean:
-	rm -rf obj corCep coverage
+	rm -rf obj corCep libcorcep.a coverage
 
-.PHONY: all test functest coverage valgrind install uninstall clean FORCE
+.PHONY: all libcorcep.a test functest coverage valgrind install uninstall clean FORCE
 
 -include $(DEPS)

@@ -229,6 +229,10 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 
 **v1.1** - `cep.so`: the engine as a library, a coraine write-path hook (under its own `COR_FEATURE` flag),
 `src/` split into the engine and its transport (notifications in, HTTP out).
+Step 1 done (2026-11-19): the engine is `libcorcep.a` (`make libcorcep.a`), and reaches the broker only through a
+`CepTransport` (`src/cepTransport.h`: reads, the statistics, the actions, the watches); the standalone corCep fills it
+with NGSI-LD over HTTP (`src/transportHttp.c`). Next: coraine's write-observer seam, then `cep.so` - a second
+`CepTransport`, its events from the write path.
 
 **v2** - `http` actions (webhooks, an allow-list of hosts); `notify` actions; tumbling windows; a timer wheel,
 if a measurement asks for one; the ETSI proposal. Candidates: windows across entities (the mean of every room),

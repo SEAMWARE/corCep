@@ -24,6 +24,7 @@
 #include "corTree/corTreeLookup.h"               // corTreeLookup
 
 #include "corCep.h"
+#include "cepTransport.h"
 
 
 
@@ -1372,7 +1373,7 @@ CepRules* rulesLoad(void)
   corAllocBufferInit(&alloc, NULL, 0, 256 * 1024, NULL, "corCep rules read");
 
   CepResponse resp;
-  bool got = brokerRequest(&alloc, CorVerbGet, "/entities", "type=Rule&options=keyValues&limit=1000", NULL, &resp);
+  bool got = cepTransport->get(&alloc, "/entities", "type=Rule&options=keyValues&limit=1000", &resp);
 
   if (got && nonexistentTenant(&resp))
   {
