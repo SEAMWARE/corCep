@@ -139,6 +139,21 @@ cepStart() {
 #
 # cepPidStop <pidFile> - a SIGTERM, then waits for the exit (corCep writes its state and statistics first - a second
 # at most), kill -9 after 5 s; the pid file removed. Its port is free when this returns.
+#
+# cepPidAlive <pid> - still RUNNING, not merely listed. `kill -0` succeeds on a zombie, and in a GitHub Actions job
+# container nothing reaps one: PID 1 is `tail -f /dev/null`. The broker IS an orphan there - corTest runs each test
+# section in a bash of its own, gone by the time the next section stops it - so every stop waited its full time on a
+# process that had exited (coraine's CI: +20 s a test). State Z in /proc/<pid>/stat is an exited process. As
+# coraine's corPidAlive.
+#
+cepPidAlive() {
+  local pid=$1 _p _c state
+  [ -n "$pid" ] || return 1
+  read -r _p _c state _ 2>/dev/null < "/proc/$pid/stat" || return 1
+  [ "$state" != "Z" ]
+}
+
+
 cepPidStop() {
   local pidFile="$1"
   [ -f "$pidFile" ] || return 0
@@ -147,7 +162,7 @@ cepPidStop() {
   pid=$(cat "$pidFile")
   kill "$pid" 2>/dev/null
   for ((i = 0; i < 50 * CEP_WAIT_FACTOR; i++)); do
-    kill -0 "$pid" 2>/dev/null || break
+    cepPidAlive "$pid" || break
     sleep 0.1
   done
   # Under valgrind the process exits before its report is written to the end: wait (bounded) for the summaries,
@@ -267,7 +282,7 @@ cepAwaitLog() {
       echo "${line#* * }"
       return 0
     fi
-    if ! kill -0 "$(cat "$CEP_TEST_DIR/corCep.pid" 2>/dev/null)" 2>/dev/null; then
+    if ! cepPidAlive "$(cat "$CEP_TEST_DIR/corCep.pid" 2>/dev/null)"; then
       echo "cepAwaitLog: corCep is not running - $CEP_TEST_DIR/corCep.log:" >&2
       tail -20 "$CEP_TEST_DIR/corCep.log" >&2
       return 1

@@ -61,9 +61,9 @@ echo
 echo "02. Another certificate pinned: the connection refused - corCep does not start"
 echo "==============================================================================="
 cepHub --broker-cert "$H/other.pem" --token-command "python3 -I $H/token.py $H 300"
-for ((i = 0; i < 50; i++)); do kill -0 "$(cat "$CEP_TEST_DIR/corCep.pid")" 2> /dev/null || break; sleep 0.1; done
+for ((i = 0; i < 50; i++)); do cepPidAlive "$(cat "$CEP_TEST_DIR/corCep.pid")" || break; sleep 0.1; done
 grep -o "GET /subscriptions: .*" "$CEP_TEST_DIR/corCep.log"
-kill -0 "$(cat "$CEP_TEST_DIR/corCep.pid")" 2> /dev/null && echo "corCep still running" || echo "corCep exited"
+cepPidAlive "$(cat "$CEP_TEST_DIR/corCep.pid")" && echo "corCep still running" || echo "corCep exited"
 cepStop                                          # stopped by its pid, whatever happened
 rm -f "$H/runs"
 echo
