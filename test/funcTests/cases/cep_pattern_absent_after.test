@@ -100,7 +100,9 @@ cepStop
 cepStart --state "$STATE"
 firedAwait still 1 4 > /dev/null              # a new log - the count starts again
 w=$(($(msNow) - t))
-[ $w -ge 1400 ] && [ $w -lt 2300 ] && echo "after 1.5 s - yes" || echo "after $w ms"
+hi=2300
+[ -n "$CEP_RUN" ] && hi=20000                  # under valgrind the restart alone takes longer than the 1.5 s - not before it, then
+[ $w -ge 1400 ] && [ $w -lt $hi ] && echo "after 1.5 s - yes" || echo "after $w ms"
 echo
 echo
 

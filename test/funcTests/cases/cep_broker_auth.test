@@ -42,7 +42,7 @@ hub() {  # hub <method> <path> [payload] - with a token of its own (NOCOUNT: not
        ${3:+-H "Content-Type: application/json" -d "$3"} "$B/ngsi-ld/v1$2"
 }
 cepHub() {  # cepHub [options...] - corCep against the test's own broker
-  "$CEP_BIN" --broker "$B" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" > "$CEP_TEST_DIR/corCep.log" 2>&1 &
+  $CEP_RUN "$CEP_BIN" --broker "$B" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" > "$CEP_TEST_DIR/corCep.log" 2>&1 &
   echo $! > "$CEP_TEST_DIR/corCep.pid"
 }
 

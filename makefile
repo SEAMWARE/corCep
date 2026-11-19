@@ -152,6 +152,16 @@ coverage:
 	@status=$$(cat obj/coverage/suite-status); if [ "$$status" != 0 ]; then \
 	   echo "*** the suite FAILED (corTest exited $$status) - the report measures a suite that is not passing"; exit $$status; fi
 
+#
+# valgrind - the functional tests with every long-running corCep under valgrind (corTest --vt): a test fails on a
+# definite or indirect leak or a memory error. corCep built -g -O0 into obj/debug (./corCep is left as it is); the
+# broker container started and stopped as for make functest. Before every release.
+#
+valgrind:
+	$(MAKE) BUILD=debug obj/debug/corCep
+	test/funcTests/broker.sh up
+	CEP_BIN=$(CURDIR)/obj/debug/corCep $(CORTEST) --vt $(CORTEST_ARGS); rc=$$?; test/funcTests/broker.sh down; exit $$rc
+
 $(OBJDIR)/corCep: $(OBJECTS) $(COR_ARCHIVES)
 	$(CC) $(EXTRA_LDFLAGS) $(if $(filter coverage,$(BUILD)),--coverage) -o $@ $(OBJECTS) $(LIBS)
 
@@ -165,6 +175,6 @@ uninstall:
 clean:
 	rm -rf obj corCep coverage
 
-.PHONY: all test functest coverage install uninstall clean FORCE
+.PHONY: all test functest coverage valgrind install uninstall clean FORCE
 
 -include $(DEPS)

@@ -46,10 +46,10 @@ home() {  # home <tenant> - a switch, a light, the rule between them
 }
 cep() {  # cep <n> <tenant> <port> [options...] - a corCep against the test's broker, its log and pid by <n>
   local n="$1" t="$2" p="$3"; shift 3
-  "$CEP_BIN" --broker "$B" --port "$p" --tenant "$t" --broker-cert "$H/cert.pem" \
+  $CEP_RUN "$CEP_BIN" --broker "$B" --port "$p" --tenant "$t" --broker-cert "$H/cert.pem" \
              --token-command "NOCOUNT=1 python3 -I $H/token.py $H 300" "$@" > "$CEP_TEST_DIR/cep$n.log" 2>&1 &
   echo $! > "$CEP_TEST_DIR/cep$n.pid"
-  for ((i = 0; i < 100; i++)); do grep -q " subscriptions\?$" "$CEP_TEST_DIR/cep$n.log" && break; sleep 0.1; done
+  for ((i = 0; i < 100 * CEP_WAIT_FACTOR; i++)); do grep -q " subscriptions\?$" "$CEP_TEST_DIR/cep$n.log" && break; sleep 0.1; done
   grep -o "[0-9]* rules\?, [0-9]* subscriptions\?$" "$CEP_TEST_DIR/cep$n.log"
 }
 

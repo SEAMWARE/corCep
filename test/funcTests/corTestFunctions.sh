@@ -21,6 +21,20 @@ CEP_BROKER_HOST="${CEP_BROKER_HOST:-127.0.0.1}"
 CEP_BROKER_PORT="${CEP_BROKER_PORT:-4062}"
 CEP_PORT="${CEP_PORT:-7620}"
 CEP_BIN="${CEP_BIN:-${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}/corCep}"
+
+# Valgrind - corTest --vt exports COR_VALGRIND=1 and COR_VALGRIND_LOG (a per-test log base), and after the test
+# judges every ${COR_VALGRIND_LOG}.*.vg it finds: definite/indirect leaks or memory errors fail it. CEP_RUN is the
+# prefix a test starts a long-running corCep with ("$CEP_RUN" unquoted, empty without --vt); the options are
+# coraine's (its corTestFunctions.sh coraineStart). Under valgrind corCep is ~20x slower: CEP_WAIT_FACTOR stretches
+# every wait of these functions, and a stop waits for the report.
+CEP_RUN=""
+CEP_WAIT_FACTOR=1
+if [ "$COR_VALGRIND" == "1" ]; then
+  CEP_RUN="valgrind --leak-check=full --show-leak-kinds=definite,indirect --errors-for-leak-kinds=none"
+  CEP_RUN="$CEP_RUN --track-origins=${COR_VALGRIND_ORIGINS:-yes} --num-callers=40 --child-silent-after-fork=yes"
+  CEP_RUN="$CEP_RUN --log-file=${COR_VALGRIND_LOG:-/tmp/corValgrind}.%p.vg"
+  CEP_WAIT_FACTOR=10
+fi
 CEP_TEST_DIR="${CEP_TEST_DIR:-/tmp/corcep-functest}"
 CEP_AUTH_DIR="${CEP_AUTH_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hub}"   # broker.sh up: the auth broker's material
 
@@ -71,7 +85,7 @@ ngsild() {
 # CEP_BROKER_URL: another broker URL for corCep (a test's proxy - ftFlakyBroker.py); default the test broker
 cepStart() {
   rm -f "$CEP_TEST_DIR/corCep.log"               # not the last corCep's: its "rules" line is not this one's
-  "$CEP_BIN" --broker "${CEP_BROKER_URL:-http://$CEP_BROKER_HOST:$CEP_BROKER_PORT}" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" \
+  $CEP_RUN "$CEP_BIN" --broker "${CEP_BROKER_URL:-http://$CEP_BROKER_HOST:$CEP_BROKER_PORT}" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" \
              > "$CEP_TEST_DIR/corCep.log" 2>&1 &
   echo $! > "$CEP_TEST_DIR/corCep.pid"
 
@@ -92,12 +106,29 @@ cepPidStop() {
   local pid i
   pid=$(cat "$pidFile")
   kill "$pid" 2>/dev/null
-  for ((i = 0; i < 50; i++)); do
+  for ((i = 0; i < 50 * CEP_WAIT_FACTOR; i++)); do
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.1
   done
+  # Under valgrind the process exits before its report is written to the end: wait (bounded) for the summaries,
+  # as a kill -9 then would truncate it - corTest scores a truncated report as a failure.
+  if [ -n "$CEP_RUN" ]; then
+    for ((i = 0; i < 100; i++)); do
+      cepValgrindReportComplete && break
+      sleep 0.1
+    done
+  fi
   kill -9 "$pid" 2>/dev/null
   rm -f "$pidFile"
+}
+cepValgrindReportComplete() {   # every .vg of this test has both summaries (coraine's corValgrindReportComplete)
+  local f found=0
+  for f in "${COR_VALGRIND_LOG:-/tmp/corValgrind}".*.vg; do
+    [ -e "$f" ] || continue
+    found=1
+    grep -q "HEAP SUMMARY" "$f" && grep -q "ERROR SUMMARY" "$f" || return 1
+  done
+  [ $found == 1 ]
 }
 cepStop() {
   cepPidStop "$CEP_TEST_DIR/corCep.pid"
@@ -112,7 +143,7 @@ cepStop() {
 cepAwaitLog() {
   local secs="${2:-5}" i line
 
-  for ((i = 0; i < secs * 10; i++)); do
+  for ((i = 0; i < secs * 10 * CEP_WAIT_FACTOR; i++)); do
     line=$(grep -- "$1" "$CEP_TEST_DIR/corCep.log" 2>/dev/null | tail -1)
     if [ -n "$line" ]; then
       echo "${line#* * }"
@@ -141,7 +172,7 @@ attrAwait() {
   local url="http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/ngsi-ld/v1/entities/$1?options=keyValues&attrs=$2"
   local secs="${4:-5}" i body
 
-  for ((i = 0; i < secs * 10; i++)); do
+  for ((i = 0; i < secs * 10 * CEP_WAIT_FACTOR; i++)); do
     body=$(curl -s -H "NGSILD-Tenant: $(cepTenant)" "$url")
     echo "$body" | grep -qE "\"$2\": *$3[,}]" && return 0
     sleep 0.1
@@ -194,7 +225,7 @@ cepSubs() {
 subsAwait() {
   local secs="${2:-5}" i n
 
-  for ((i = 0; i < secs * 10; i++)); do
+  for ((i = 0; i < secs * 10 * CEP_WAIT_FACTOR; i++)); do
     n=$(cepSubs | grep -c 'corcep-[0-9]*$')
     [ "$n" == "$1" ] && return 0
     sleep 0.1
@@ -225,7 +256,7 @@ firedCount() {
 firedAwait() {
   local secs="${3:-5}" i n
 
-  for ((i = 0; i < secs * 20; i++)); do
+  for ((i = 0; i < secs * 20 * CEP_WAIT_FACTOR; i++)); do
     n=$(firedCount "$1")
     [ "$n" -ge "$2" ] && { echo "$1: $n"; return 0; }
     sleep 0.05
