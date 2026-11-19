@@ -47,6 +47,7 @@ jobs:
 
       #
       # Release first (-O2 finds what -O0 does not), then the debug build the tests run on.
+      # COR_LIBS_KEEP: bootstrap clones corCep too (corLibs#41) - here stack/corCep is this PR, leave it.
       # corTest sorts JSON bodies with the corJson tool and refuses to run without it - built by bootstrap.sh,
       # not on PATH in the image.
       #
@@ -58,7 +59,7 @@ jobs:
             -e CEP_TEST_DIR=/stack/functest \
             "$CI_IMAGE" bash -c '
               set -e
-              (cd ../corLibs && ./bootstrap.sh)
+              (cd ../corLibs && COR_LIBS_KEEP=corCep ./bootstrap.sh)
               make BUILD=release
               make clean
               make BUILD=debug
