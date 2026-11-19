@@ -53,6 +53,22 @@ coraine --bridges cep --cep-tenant home
 - **Not in the plugin:** `/dry-run` (no listener) and `--broker-cert`.
 
 The plugin is built against the same cor-libs checkout as coraine, and doesn't link them: it uses coraine's.
+`make plugin-install` puts it in `/opt/seamware/plugins/bridge` (`PLUGIN_DIR=...`); the corLibs umbrella runs it after
+coraine's own build.
+
+### Tests, in both forms
+
+```
+make functest           # the standalone corCep, against a broker on 127.0.0.1:1026
+make functest-plugin    # the same tests, cep.so in a coraine of its own (port 4072, CEP_CORAINE=..., CEP_SEAMWARE_PLUGINS=...)
+make functest-both      # one, then the other
+make valgrind           # the standalone under valgrind
+make valgrind-plugin    # the coraine holding a debug cep.so under valgrind (about 20 minutes)
+```
+
+The tests tagged `standalone` (the `/dry-run` endpoint, `--broker-cert`, the notification secret on a port) run in
+the standalone form only. `CEP_CORAINE_SHA=<commit>` makes every plugin start check that the coraine it talks to is
+that commit (`GET /build`) - coraine's CI runs these tests against the coraine it just built.
 
 `packaging/libs.sh <dir>` clones the cor-libs (their `main`) into `<dir>` and builds them, in order.
 

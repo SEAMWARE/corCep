@@ -36,6 +36,24 @@ if [ "$COR_VALGRIND" == "1" ]; then
   CEP_WAIT_FACTOR=10
 fi
 CEP_TEST_DIR="${CEP_TEST_DIR:-/tmp/corcep-functest}"
+
+# The plugin form - CEP_PLUGIN=1 (make functest-plugin): corCep as cep.so INSIDE a native coraine, which is then also
+# the test broker. cepStart restarts that coraine with --bridges cep and the test's options as coraine's (--x ->
+# --cep-x); cepStop restarts it without - the broker stays up for the rest of the test, as in the standalone form.
+# corCep's lines are taken out of coraine's (-v) into $CEP_TEST_DIR/corCep.log, in the standalone's form, and
+# corCep.pid is that coraine's. Tests of the standalone only (/dry-run, the notification port) are tagged standalone.
+#
+#   CEP_CORAINE        the coraine binary (default: coraine)
+#   CEP_PLUGIN_SO      cep.so (default: cep.so in this repo)
+#   CEP_PLUGIN_RUN     the run's directory: its plugin directory, the plain broker's pid and log (the database is the test's)
+#   CEP_SEAMWARE_PLUGINS  coraine's own plugins, linked into it (default /opt/seamware/plugins)
+#   CEP_CORAINE_SHA    the commit the coraine must have been built from (GET /build, checked at every start) - unset:
+#                      not checked
+CEP_PLUGIN="${CEP_PLUGIN:-0}"
+CEP_CORAINE="${CEP_CORAINE:-coraine}"
+CEP_PLUGIN_SO="${CEP_PLUGIN_SO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/cep.so}"
+CEP_PLUGIN_RUN="${CEP_PLUGIN_RUN:-/tmp/corcep-plugin}"
+CEP_SEAMWARE_PLUGINS="${CEP_SEAMWARE_PLUGINS:-/opt/seamware/plugins}"
 CEP_AUTH_DIR="${CEP_AUTH_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hub}"   # broker.sh up: the auth broker's material
 
 
@@ -44,10 +62,17 @@ CEP_AUTH_DIR="${CEP_AUTH_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hub}
 # cepTestInit - the test's scratch directory, emptied, and a new tenant for it (--INIT--)
 #
 cepTestInit() {
-  cepStop
+  if [ "$CEP_PLUGIN" == "1" ]; then              # the broker down while its database (the test's) is emptied
+    cepPidStop "$CEP_TEST_DIR/corCep.pid"
+    cepPidStop "$CEP_PLUGIN_RUN/coraine.pid"
+  else
+    cepStop
+  fi
   rm -rf "${CEP_TEST_DIR:?}"
   mkdir -p "$CEP_TEST_DIR"
   echo "cep$(date +%s%N | tail -c 10)$$" > "$CEP_TEST_DIR/tenant"
+  [ "$CEP_PLUGIN" == "1" ] && cepPluginBroker
+  true
 }
 
 
@@ -85,6 +110,21 @@ ngsild() {
 # CEP_BROKER_URL: another broker URL for corCep (a test's proxy - ftFlakyBroker.py); default the test broker
 cepStart() {
   rm -f "$CEP_TEST_DIR/corCep.log"               # not the last corCep's: its "rules" line is not this one's
+
+  if [ "$CEP_PLUGIN" == "1" ]; then
+    local -a cepArgs=() arg
+    for arg in "$@"; do
+      case "$arg" in
+        --*) cepArgs+=("--cep-${arg#--}") ;;
+        *)   cepArgs+=("$arg") ;;
+      esac
+    done
+    cepPluginBroker --bridges cep --cep-broker "${CEP_BROKER_URL:-http://$CEP_BROKER_HOST:$CEP_BROKER_PORT}" \
+                    --cep-tenant "$(cepTenant)" "${cepArgs[@]}" || return 1
+    cepAwaitLog " rules\?, [0-9]* subscriptions\?$" 10 > /dev/null
+    return
+  fi
+
   $CEP_RUN "$CEP_BIN" --broker "${CEP_BROKER_URL:-http://$CEP_BROKER_HOST:$CEP_BROKER_PORT}" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" \
              > "$CEP_TEST_DIR/corCep.log" 2>&1 &
   echo $! > "$CEP_TEST_DIR/corCep.pid"
@@ -131,7 +171,85 @@ cepValgrindReportComplete() {   # every .vg of this test has both summaries (cor
   [ $found == 1 ]
 }
 cepStop() {
+  if [ "$CEP_PLUGIN" == "1" ]; then
+    cepPidStop "$CEP_TEST_DIR/corCep.pid"        # coraine with corCep in it: corCep's state and statistics written
+    cepPluginBroker                              # and the broker back, without corCep
+    return
+  fi
+
   cepPidStop "$CEP_TEST_DIR/corCep.pid"
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# cepPluginLog - (CEP_PLUGIN=1) corCep's lines out of coraine's output, stamped as the standalone stamps them
+# (YYYY-MM-DD HH:MM:SS.mmm - tests read the time from the line): a line each as it comes
+#
+cepPluginLog() {
+  local line now frac
+  while IFS= read -r line; do
+    case "$line" in
+      [IWE]": "*"cepPlugin.c["*"]: corCep: "*)
+        now=$EPOCHREALTIME
+        frac=${now#*.}
+        printf '%(%Y-%m-%d %H:%M:%S)T.%s %s\n' "${now%.*}" "${frac:0:3}" "${line#*: corCep: }" ;;
+    esac
+  done
+}
+
+
+# -----------------------------------------------------------------------------
+#
+# cepPluginBroker [coraine options] - (CEP_PLUGIN=1) the test broker, a native coraine, (re)started: with options
+# (--bridges cep ...) it is corCep's - its pid in $CEP_TEST_DIR/corCep.pid, corCep's lines in corCep.log, under
+# valgrind with --vt; without, the plain broker. The database is the TEST's ($CEP_TEST_DIR/db, emptied by cepTestInit):
+# what the test made is there after a restart, and nothing of the tests before it - a broker that loaded them all would
+# start, and under valgrind stop, ever slower.
+#
+cepPluginBroker() {
+  local run="$CEP_PLUGIN_RUN" d i
+
+  cepPidStop "$run/coraine.pid"                  # the plain one, if up
+
+  mkdir -p "$run/plugins/bridge" "$run/log" "$CEP_TEST_DIR/db"
+  for d in api auth db transport troe; do
+    [ -e "$CEP_SEAMWARE_PLUGINS/$d" ] && ln -sfn "$CEP_SEAMWARE_PLUGINS/$d" "$run/plugins/$d"
+  done
+  ln -sf "$CEP_PLUGIN_SO" "$run/plugins/bridge/cep.so"
+
+  local -a common=(--port "$CEP_BROKER_PORT" --database corDB --dbDir "$CEP_TEST_DIR/db" --logDir "$run/log")
+
+  if [ $# -gt 0 ]; then
+    SEAMWARE_PLUGIN_DIR="$run/plugins" $CEP_RUN "$CEP_CORAINE" -v "${common[@]}" "$@" \
+      > >(cepPluginLog > "$CEP_TEST_DIR/corCep.log") 2>&1 &
+    echo $! > "$CEP_TEST_DIR/corCep.pid"
+    cp "$CEP_TEST_DIR/corCep.pid" "$run/coraine.pid"
+  else
+    SEAMWARE_PLUGIN_DIR="$run/plugins" "$CEP_CORAINE" "${common[@]}" >> "$run/coraine.log" 2>&1 &
+    echo $! > "$run/coraine.pid"
+  fi
+
+  for ((i = 0; i < 100 * CEP_WAIT_FACTOR; i++)); do
+    curl -s -o /dev/null "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/version" && break
+    sleep 0.1
+  done
+  if ! curl -s -o /dev/null "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/version"; then
+    echo "cepPluginBroker: coraine not up on port $CEP_BROKER_PORT - $run/coraine.log" >&2
+    return 1
+  fi
+
+  # CEP_CORAINE_SHA: the coraine commit these tests must run against (coraine's CI: the one it just built) - what
+  # answers on the port is asked (GET /build), every start: another coraine fails the test, it is not tested
+  if [ -n "$CEP_CORAINE_SHA" ]; then
+    local sha
+    sha=$(curl -s "http://$CEP_BROKER_HOST:$CEP_BROKER_PORT/build" | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["build"]["gitSha"])' 2>/dev/null)
+    if [ "${sha:0:7}" != "${CEP_CORAINE_SHA:0:7}" ]; then
+      echo "cepPluginBroker: the coraine on port $CEP_BROKER_PORT is $sha, not $CEP_CORAINE_SHA ($CEP_CORAINE)" >&2
+      return 1
+    fi
+  fi
+  return 0
 }
 
 

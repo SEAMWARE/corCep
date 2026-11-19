@@ -68,7 +68,8 @@ echo "04. corCep started while the rules' GET fails: no rules, read again; heale
 echo "=================================================================================================="
 cepStop
 echo "RULES 500" > "$FAIL"
-(sleep 2; rm -f "$FAIL") &                       # healed while corCep tries - cepStart waits for the rules read
+(sleep $((2 * CEP_WAIT_FACTOR)); rm -f "$FAIL") &  # healed while corCep tries - cepStart waits for the rules read (under valgrind
+                                                   # a coraine holding corCep takes seconds to start: the heal later)
 healer=$!
 CEP_BROKER_URL="http://127.0.0.1:$PPORT" cepStart --stats-interval 0
 wait $healer

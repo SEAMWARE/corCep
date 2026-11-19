@@ -226,6 +226,7 @@ static void cepClose(void)
     return;
 
   cepStopping = SIGTERM;
+  engineWake();                                  // not at its next turn - a second later
   pthread_join(engineThread, NULL);              // the actions drained (2 s at most), the state and the statistics written
   engineStarted = false;
 

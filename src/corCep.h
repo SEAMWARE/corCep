@@ -257,6 +257,7 @@ extern void subsFree(void);                                   // cep.so's close:
 extern bool subsRenew(void);                                  // all renewed (their owner); true: one was gone - read the rules again
 extern bool listenerStart(void);                              // the notification server, its own thread
 extern void engineRun(void);                                  // the events, one at a time - till a stop (cepStopping): exit(0), or return (cepExitOnStop false)
+extern void engineWake(void);                                 // a plugin's close, after cepStopping set: the stop seen at once
 extern void engineQueueFree(void);                            // a plugin's close, after senderStop: what still waits freed
 extern void engineQueue(const char* which, const char* body, int bodyLen);   // from the listener / sender threads; full: the oldest events dropped
 extern int  queueMax;                                                       // --queue-max

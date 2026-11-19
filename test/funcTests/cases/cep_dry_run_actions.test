@@ -11,7 +11,7 @@
 /dry-run shows every kind of action: toggle, step, create (with and without an id), delete (one, an id, a group)
 
 --TAGS--
-cep dryrun action
+cep dryrun action standalone
 
 --INIT--
 cepTestInit

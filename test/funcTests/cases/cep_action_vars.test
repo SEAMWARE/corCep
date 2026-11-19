@@ -13,7 +13,7 @@
 ${...} in actions: entity, event entity and value, a window's avg - typed or as text; checked for a q and an id
 
 --TAGS--
-cep action vars
+cep action vars standalone
 
 --INIT--
 cepTestInit

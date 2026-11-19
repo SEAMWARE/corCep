@@ -21,7 +21,9 @@ echo "01. Three 'at' rules, corCep started"
 echo "===================================="
 then='{"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:mark", "set": {"mark": 1}}]}'
 madrid='"location": {"type": "GeoProperty", "value": {"type": "Point", "coordinates": [-3.7038, 40.4168]}}'
-soon=$(python3 -I -c 'import datetime; print((datetime.datetime.now() + datetime.timedelta(seconds=3)).strftime("%H:%M:%S"))')
+ahead=3
+[ -n "$CEP_RUN" ] && ahead=30                    # under valgrind corCep (a coraine holding it) is up only seconds later
+soon=$(python3 -I -c 'import datetime, sys; print((datetime.datetime.now() + datetime.timedelta(seconds=int(sys.argv[1]))).strftime("%H:%M:%S"))' "$ahead")
 echo "$soon" > "$CEP_TEST_DIR/soon"
 ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:mark", "type": "Light", "mark": {"type": "Property", "value": 0}}'
 ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:soon\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": {\"pattern\": {\"at\": \"$soon\"}}}, \"then\": $then}"
@@ -34,7 +36,7 @@ echo
 
 echo "02. soon - fired once, at its time; its next: tomorrow, the same time"
 echo "====================================================================="
-firedAwait soon 1 6
+firedAwait soon 1 $((ahead + 3))
 sleep 0.5
 echo "soon, 0.5 s later: $(firedCount soon)"
 python3 -I - "$CEP_TEST_DIR/corCep.log" "$(cat "$CEP_TEST_DIR/soon")" <<'PY'

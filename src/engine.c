@@ -218,6 +218,12 @@ static Item* dequeue(long long ms)
   pthread_mutex_lock(&queueMutex);
   while (queueHead == NULL)
   {
+    if (cepStopping)                             // engineWake: the stop seen at once, not at the next turn
+    {
+      pthread_mutex_unlock(&queueMutex);
+      return NULL;
+    }
+
     if (pthread_cond_timedwait(&queueCond, &queueMutex, &until) != 0)
     {
       pthread_mutex_unlock(&queueMutex);
@@ -1503,6 +1509,19 @@ static void engineFree(CorAlloc* allocP)
   }
 
   corAllocBufferReset(allocP, false);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// engineWake - the engine's wait cut short: a stop (cepStopping set first) seen at once - a plugin's close
+//
+void engineWake(void)
+{
+  pthread_mutex_lock(&queueMutex);
+  pthread_cond_broadcast(&queueCond);
+  pthread_mutex_unlock(&queueMutex);
 }
 
 
