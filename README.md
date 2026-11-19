@@ -29,7 +29,30 @@ make install          # /usr/local/bin/corCep (PREFIX=..., DESTDIR=...)
 
 `make libcorcep.a` - the engine alone, as a library: rules, patterns, schedules, conditions, actions, statistics,
 state. It reaches the broker through a `CepTransport` (`src/cepTransport.h`); the corCep binary is it on NGSI-LD over
-HTTP - the base of coraine's in-process plugin to come ([doc/design.md](doc/design.md) § 9).
+HTTP.
+
+### Inside coraine: `cep.so`
+
+`make cep.so` builds corCep as a coraine bridge plugin. Put it beside coraine's other bridges
+(`/opt/seamware/plugins/bridge/cep.so`) and start coraine with it:
+
+```bash
+coraine --bridges cep --cep-tenant home
+```
+
+- **Events in process.** corCep's subscriptions name `inproc://cep/notify/<secret>/<n>`: coraine matches every write
+  against them as against any subscription (q, watched attributes, tenant, the owner's rights), then hands the
+  notification to the plugin after the response. No HTTP, no listener, no port. The plugin claims the scheme
+  `inproc`; without it loaded, coraine refuses such a subscription.
+- **Requests as before.** Reads and actions go to coraine over HTTP on 127.0.0.1 (`--cep-broker`, default
+  `http://127.0.0.1:1026`), with the token, the author's rights, the retries and the order per target unchanged.
+- **Options** are coraine's, prefixed `--cep-`: `--cep-tenant`, `--cep-token-env`, `--cep-token-command`,
+  `--cep-stats-interval`, `--cep-renew-interval`, `--cep-queue-max`, `--cep-retry-for`, `--cep-state`, `--cep-pdp`,
+  `--cep-author-jwks`, `--cep-author-issuer`, `--cep-jwks-refresh` (`coraine -U` lists them). corCep's lines go to
+  coraine's log (`-v` shows them).
+- **Not in the plugin:** `/dry-run` (no listener) and `--broker-cert`.
+
+The plugin is built against the same cor-libs checkout as coraine, and doesn't link them: it uses coraine's.
 
 `packaging/libs.sh <dir>` clones the cor-libs (their `main`) into `<dir>` and builds them, in order.
 

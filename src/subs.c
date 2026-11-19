@@ -348,3 +348,20 @@ bool subsApply(CepRules* rulesP)
   corAllocBufferReset(&alloc, false);
   return ok;
 }
+
+
+
+// -----------------------------------------------------------------------------
+//
+// subsFree - the table of the watches' subscriptions freed (cep.so's close; the subscriptions themselves stay in
+// the broker: the next start removes them, subsInit)
+//
+void subsFree(void)
+{
+  for (int ix = 0; ix < subN; ix++)
+    free(subV[ix].key);
+  free(subV);
+  subV   = NULL;
+  subN   = 0;
+  subMax = 0;
+}

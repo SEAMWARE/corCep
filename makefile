@@ -65,7 +65,7 @@ OBJDIR      = obj/$(BUILD)
 OBJECTS     = $(SOURCES:src/%.c=$(OBJDIR)/%.o)
 ENGINE_OBJECTS = $(ENGINE_SOURCES:src/%.c=$(OBJDIR)/%.o)
 CEP_OBJECTS    = $(CEP_SOURCES:src/%.c=$(OBJDIR)/%.o)
-DEPS        = $(OBJECTS:.o=.d)
+DEPS        = $(OBJECTS:.o=.d) $(patsubst src/%.c,obj/$(BUILD)-pic/%.d,$(ENGINE_SOURCES) src/cepPlugin.c src/transportHttp.c src/broker.c src/subs.c src/token.c src/sender.c)
 
 #
 # Link order: a library before the ones it uses
@@ -94,6 +94,22 @@ $(OBJDIR)/libcorcep.a: $(ENGINE_OBJECTS)
 
 libcorcep.a: $(OBJDIR)/libcorcep.a
 	cp $< $@
+
+#
+# cep.so - corCep inside coraine (coraine --bridges cep): the engine, the HTTP requests and the actions' queues,
+# position-independent, the cor-libs NOT linked - they are coraine's (exported). No listener, no /dry-run.
+# Installed as <coraine prefix>/plugins/bridge/cep.so; built in obj/<build>-pic.
+#
+PIC_DIR     = obj/$(BUILD)-pic
+PLUGIN_SOURCES = $(ENGINE_SOURCES) src/cepPlugin.c src/transportHttp.c src/broker.c src/subs.c src/token.c src/sender.c
+PLUGIN_OBJECTS = $(PLUGIN_SOURCES:src/%.c=$(PIC_DIR)/%.o)
+
+cep.so: $(PLUGIN_OBJECTS)
+	$(CC) $(EXTRA_LDFLAGS) -shared -o $@ $(PLUGIN_OBJECTS) -lpthread -lm
+
+$(PIC_DIR)/%.o: src/%.c
+	@mkdir -p $(PIC_DIR)
+	$(CC) $(subst -DCEP_WITH_DRY_RUN=1,-DCEP_WITH_DRY_RUN=0,$(CFLAGS)) -fPIC -fvisibility=hidden -c $< -o $@
 
 $(OBJDIR)/%.o: src/%.c
 	@mkdir -p $(OBJDIR)
@@ -190,7 +206,7 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/corCep
 
 clean:
-	rm -rf obj corCep libcorcep.a coverage
+	rm -rf obj corCep libcorcep.a cep.so coverage
 
 .PHONY: all libcorcep.a test functest coverage valgrind install uninstall clean FORCE
 

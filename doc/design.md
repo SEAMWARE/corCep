@@ -231,8 +231,13 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
 `src/` split into the engine and its transport (notifications in, HTTP out).
 Step 1 done (2026-11-19): the engine is `libcorcep.a` (`make libcorcep.a`), and reaches the broker only through a
 `CepTransport` (`src/cepTransport.h`: reads, the statistics, the actions, the watches); the standalone corCep fills it
-with NGSI-LD over HTTP (`src/transportHttp.c`). Next: coraine's write-observer seam, then `cep.so` - a second
-`CepTransport`, its events from the write path.
+with NGSI-LD over HTTP (`src/transportHttp.c`). Step 2 done (2026-11-19), with no coraine change: `cep.so` is a bridge plugin
+(`src/cepPlugin.c`) that claims the notification scheme `inproc` (BridgeDriver ABI 10). corCep's subscriptions name
+`inproc://cep/notify/<secret>/<n>` - in process, the host part the consumer - so coraine's own subscription matching
+picks the events, after the response, and hands them over without HTTP. The requests are still HTTP to 127.0.0.1
+(phase A); an in-process request entry in `BridgeBroker` (phase B) only if a measurement asks for it. The plugin's
+close stops every thread of its own (the engine, the sender, the key refresh) and frees what they held: coraine
+unloads it next.
 
 **v2** - `http` actions (webhooks, an allow-list of hosts); `notify` actions; tumbling windows; a timer wheel,
 if a measurement asks for one; the ETSI proposal. Candidates: windows across entities (the mean of every room),

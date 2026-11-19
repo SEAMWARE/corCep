@@ -43,6 +43,9 @@ static int              refreshS     = 300;
 static pthread_mutex_t  refreshMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t   refreshCond  = PTHREAD_COND_INITIALIZER;
 static bool             refreshNow   = false;
+static bool             refreshStop  = false;  // keysStop: the thread ends
+static pthread_t        refreshTid;
+static bool             refreshUp    = false;
 
 
 
@@ -116,10 +119,14 @@ static void* refresher(void* argP)
     until.tv_sec += refreshS;
 
     pthread_mutex_lock(&refreshMutex);
-    while ((refreshNow == false) && (pthread_cond_timedwait(&refreshCond, &refreshMutex, &until) == 0))
+    while ((refreshNow == false) && (refreshStop == false) && (pthread_cond_timedwait(&refreshCond, &refreshMutex, &until) == 0))
       ;
     refreshNow = false;
+    bool stop  = refreshStop;
     pthread_mutex_unlock(&refreshMutex);
+
+    if (stop)
+      break;
 
     char why[300];
     if (keysFetch(why, sizeof(why)) == false)
@@ -175,7 +182,28 @@ bool keysInit(const char* jwks, const char* authorJwks, int refresh, char* why, 
     snprintf(why, whyLen, "no thread for the key refresh");
     return false;
   }
-  pthread_detach(tid);
+  refreshTid = tid;
+  refreshUp  = true;
 
   return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// keysStop - the refresh thread ended (cep.so's close; the standalone just exits)
+//
+void keysStop(void)
+{
+  if (refreshUp == false)
+    return;
+
+  pthread_mutex_lock(&refreshMutex);
+  refreshStop = true;
+  pthread_cond_broadcast(&refreshCond);
+  pthread_mutex_unlock(&refreshMutex);
+
+  pthread_join(refreshTid, NULL);
+  refreshUp = false;
 }
