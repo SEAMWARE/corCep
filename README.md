@@ -782,6 +782,18 @@ CI (`.github/workflows/ci.yml`) builds corCep against the cor libs' main and run
 pull request.
 
 
+### Valgrind
+
+```
+make valgrind           # the functional tests, every long-running corCep under valgrind - before every release
+```
+
+corCep built `-g -O0` into `obj/debug`, the suite run with `corTest --vt`: a test fails on a definite or indirect leak
+or a memory error (valgrind's report per test: `/tmp/corValgrind.<test>.<pid>.vg`). The waits of the test functions
+are ten times longer there; a test that crashes corCep on purpose (`kill -9`) drops that process's report.
+
+2026-11-19: 47 of 47, no leaks, no errors.
+
 ### Coverage
 
 ```

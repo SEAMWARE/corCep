@@ -25,7 +25,13 @@ STATE="$CEP_TEST_DIR/state.cor"
 then='{"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:hall", "set": {"mark": 1}}]}'
 rule() { ngsildStatus POST /entities "{\"id\": \"urn:ngsi-ld:Rule:$1\", \"type\": \"Rule\", \"when\": {\"type\": \"JsonProperty\", \"json\": $2}, \"then\": $then}"; }
 cepStateStart() { cepStart --state "$STATE"; subsAwait "${1:-3}" > /dev/null; }
-crash() { local pid; pid=$(cat "$CEP_TEST_DIR/corCep.pid"); kill -9 "$pid"; wait "$pid" 2> /dev/null; rm -f "$CEP_TEST_DIR/corCep.pid"; }
+# crash: a kill -9 - under valgrind (corTest --vt) that process's report can never be complete, so it is dropped;
+# the other corCeps of the test are still checked
+crash() {
+  local pid; pid=$(cat "$CEP_TEST_DIR/corCep.pid"); kill -9 "$pid"; wait "$pid" 2> /dev/null; rm -f "$CEP_TEST_DIR/corCep.pid"
+  [ -n "$CEP_RUN" ] && rm -f "${COR_VALGRIND_LOG:-/tmp/corValgrind}.$pid.vg"
+  true
+}
 
 
 echo "01. A switch, a motion sensor, a room, a light; 'double' (two presses within 20 s), 'quiet' (no motion for 3 s),"

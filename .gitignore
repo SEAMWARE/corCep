@@ -4,3 +4,4 @@ __pycache__/
 /test/funcTests/hub/
 /coverage/
 /test/funcTests/cases/*.CB.log
+/test/funcTests/cases/*.CP?.log
