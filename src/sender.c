@@ -61,6 +61,7 @@ typedef struct Patch
 typedef struct Target
 {
   struct Target*  next;
+  char*           tenant;                        // the tenant of the action - of the event that fired it ("" the default)
   char*           id;
   Patch*          head;
   Patch*          tail;
@@ -147,15 +148,22 @@ static void enqueue(const char* ruleId, int action, const char* entity, CorRestV
 
   pthread_mutex_lock(&mutex);
 
+  const char* tenant = (cepTenantNow != NULL) ? cepTenantNow : "";   // the engine's tenant at work (tenantUse)
+
   Target* tP = targetList;
-  while ((tP != NULL) && (strcmp(tP->id, entity) != 0))
+  while ((tP != NULL) && ((strcmp(tP->id, entity) != 0) || (strcmp(tP->tenant, tenant) != 0)))
     tP = tP->next;
 
   if (tP == NULL)
   {
     tP = calloc(1, sizeof(Target));
-    if ((tP == NULL) || ((tP->id = strdup(entity)) == NULL))
+    if ((tP == NULL) || ((tP->id = strdup(entity)) == NULL) || ((tP->tenant = strdup(tenant)) == NULL))
     {
+      if (tP != NULL)
+      {
+        free(tP->id);
+        free(tP->tenant);
+      }
       free(tP);
       pthread_mutex_unlock(&mutex);
       report(ruleId, action, true, "out of memory");
@@ -334,6 +342,8 @@ static void* senderThread(void* arg)
     char why[600] = { 0 };
     int  may      = 1;
 
+    tenantUse(tP->tenant);                       // the PDP's question and the request: in the action's tenant
+
     if (pP->author != NULL)
     {
       char ldPath[1100];                         // as the PEP hands it over: decoded (APISIX's uri)
@@ -356,9 +366,11 @@ static void* senderThread(void* arg)
     else if (done == false)
     {
       char what[512];
-      snprintf(what, sizeof(what), "%s %s", verbName(pP->verb), id);
+      bool named = (cep.single == false) && (tP->tenant[0] != 0);   // --tenant: one tenant, not said
+      snprintf(what, sizeof(what), "%s %s%s%s%s", verbName(pP->verb), id, named ? " (tenant " : "", named ? tP->tenant : "", named ? ")" : "");
       brokerFailed(why, sizeof(why), what, &resp);
     }
+    tenantUse(NULL);
     corAllocBufferReset(&alloc, true);
 
     pthread_mutex_lock(&mutex);
@@ -395,6 +407,7 @@ static void* senderThread(void* arg)
       while (*prevPP != tP)
         prevPP = &(*prevPP)->next;
       *prevPP = tP->next;
+      free(tP->tenant);
       free(tP->id);
       free(tP);
     }
@@ -473,6 +486,7 @@ void senderStop(void)
       tP->head  = pP->next;
       patchFree(pP);
     }
+    free(tP->tenant);
     free(tP->id);
     free(tP);
   }

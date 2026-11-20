@@ -6,7 +6,8 @@
 //
 // --state <file>: the patterns' state over a restart (doc/design.md § 6) - open matches, deadlines, window values.
 // Written (patternsSave) by the engine's thread at most once a second when something changed, and when corCep stops
-// (SIGTERM, SIGINT); read back (patternsLoad) at start, before the first rules are adopted.
+// (SIGTERM, SIGINT); read back at start - each tenant's (patternsLoad) when the tenant is made, before it adopts the
+// rules. Version 2: a section per tenant; a state of corCep 0.1 (version 1, one tenant) is read as its tenant's.
 //
 // The cor format (corTree/corTreeBin.h - a tree, binary, names numbered by first appearance), behind 8 bytes:
 // "corCepS" and a NUL. Written whole to <file>.tmp, flushed to the disk (fsync), renamed over <file>: a crash while
@@ -24,6 +25,7 @@
 #include "corAlloc/corAllocBufferReset.h"        // corAllocBufferReset
 #include "corTree/corTreeBin.h"                  // corTreeBinEncode, corTreeBinDecode, CorBinTables
 #include "corTree/corTreeBuilder.h"              // corTreeChildAdd
+#include "corTree/corTreeLookup.h"               // corTreeLookup
 
 #include "corCep.h"
 
@@ -51,9 +53,35 @@ static long long wallNow(void)
 
 // -----------------------------------------------------------------------------
 //
-// stateLoad - the state file read into psP; none yet, or one that is not a state: the patterns start empty (logged)
+// What stateLoad read - kept till each tenant is made (stateLoadTenant): a tenant is known only once the broker
+// lists it. The tables outlive the tree: a name sent once points into them.
 //
-void stateLoad(CepPatterns* psP)
+static CorAlloc      loadAlloc;
+static CorBinTables  loadTables;
+static bool          loadUp   = false;
+static char*         loadText = NULL;
+static CorNode*      loadTopP = NULL;            // version 2: { version, tenants: [ { tenant, <patternsSave> } ], steps }; 1: 0.1's
+static int           loadSteps = 0;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// stateLegacyTenant - the tenant a state of corCep 0.1 (one tenant, not named in it) was of
+//
+const char* stateLegacyTenant(void)
+{
+  return (cep.single && (cep.rulesTenant != NULL)) ? cep.rulesTenant : "";
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// stateLoad - the state file read; its steps kept for the rules (steppersLoad), each tenant's patterns for when it
+// is made. None yet, or one that is not a state: the patterns start empty (logged)
+//
+void stateLoad(void)
 {
   if (stateFile == NULL)
     return;
@@ -79,36 +107,88 @@ void stateLoad(CepPatterns* psP)
   }
   fclose(fP);
 
-  CorAlloc      alloc;
-  CorBinTables  tables;
-  const char*   error = NULL;
-  CorNode*      topP  = NULL;
-  int           n     = -1;
+  const char* error = NULL;
+  CorNode*    topP  = NULL;
 
-  corAllocBufferInit(&alloc, NULL, 0, 256 * 1024, NULL, "corCep state read");
-  bool tablesUp = (size > (long) sizeof(magic)) && (memcmp(text, magic, sizeof(magic)) == 0) && corTreeBinTablesInit(&tables, 4096, 4096);
+  corAllocBufferInit(&loadAlloc, NULL, 0, 256 * 1024, NULL, "corCep state read");
+  loadUp   = (size > (long) sizeof(magic)) && (memcmp(text, magic, sizeof(magic)) == 0) && corTreeBinTablesInit(&loadTables, 4096, 4096);
+  loadText = text;
 
-  if (tablesUp)                                  // the tables outlive the tree: a name sent once points into them
-    topP = corTreeBinDecode(&text[sizeof(magic)], size - sizeof(magic), NULL, &tables, &alloc, &error);
+  if (loadUp)
+    topP = corTreeBinDecode(&text[sizeof(magic)], size - sizeof(magic), NULL, &loadTables, &loadAlloc, &error);
 
-  long long nowMono = nowMs();
-  long long nowWall = wallNow();
+  CorNode* versionP = (topP != NULL) ? corTreeLookup(topP, "version") : NULL;
+  long long version = ((versionP != NULL) && (versionP->type == CorInt)) ? versionP->value.i : 0;
 
-  if (topP != NULL)
-    n = patternsLoad(psP, topP, nowMono, nowWall);
-
-  if (n < 0)
-    logLine("state: %s - not a corCep state (version 1)%s%s, starting empty", stateFile, (error != NULL) ? ": " : "", (error != NULL) ? error : "");
-  else
+  if ((version != 1) && (version != 2))
   {
-    int steps = steppersLoad(topP, nowMono, nowWall);
-    logLine("state: %s - %d rule%s' matches and deadlines, %d step%s read", stateFile, n, (n == 1) ? "" : "s", steps, (steps == 1) ? "" : "s");
+    logLine("state: %s - not a corCep state (version 1 or 2)%s%s, starting empty", stateFile, (error != NULL) ? ": " : "", (error != NULL) ? error : "");
+    stateRelease();
+    return;
   }
 
-  if (tablesUp)
-    corTreeBinTablesRelease(&tables);
-  corAllocBufferReset(&alloc, false);
-  free(text);
+  loadTopP  = topP;
+  loadSteps = steppersLoad(topP, nowMs(), wallNow());
+  if (cep.single == false)                       // --tenant: one line, once its tenant is read (stateLoadTenant)
+    logLine("state: %s - read%s, %d step%s", stateFile, (version == 1) ? " (corCep 0.1's)" : "", loadSteps, (loadSteps == 1) ? "" : "s");
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// stateLoadTenant - what the state file had for <tenant>, into psP; the number of rules read (0: nothing)
+//
+int stateLoadTenant(CepPatterns* psP, const char* tenant)
+{
+  CorNode* entryP = NULL;
+
+  if (loadTopP == NULL)
+    return 0;
+
+  CorNode* tenantsP = corTreeLookup(loadTopP, "tenants");
+
+  if (tenantsP == NULL)                          // 0.1's: one tenant's
+    entryP = (strcmp(tenant, stateLegacyTenant()) == 0) ? loadTopP : NULL;
+  else if (tenantsP->type == CorArray)
+  {
+    for (CorNode* eP = tenantsP->value.head; (eP != NULL) && (entryP == NULL); eP = eP->next)
+    {
+      CorNode* nameP = corTreeLookup(eP, "tenant");
+      if ((nameP != NULL) && (nameP->type == CorString) && (strcmp(nameP->value.s, tenant) == 0))
+        entryP = eP;
+    }
+  }
+
+  int n = (entryP != NULL) ? patternsLoad(psP, entryP, nowMs(), wallNow()) : 0;
+  if (n < 0)
+    n = 0;
+
+  if (cep.single)
+    logLine("state: %s - %d rule%s' matches and deadlines, %d step%s read", stateFile, n, (n == 1) ? "" : "s", loadSteps, (loadSteps == 1) ? "" : "s");
+  else if (n > 0)
+    logLine("state: tenant %s - %d rule%s' matches and deadlines read", TENANT_TEXT(tenant), n, (n == 1) ? "" : "s");
+
+  return n;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// stateRelease -
+//
+void stateRelease(void)
+{
+  if (loadUp)
+    corTreeBinTablesRelease(&loadTables);
+  if (loadText != NULL)
+    corAllocBufferReset(&loadAlloc, false);
+  free(loadText);
+
+  loadUp   = false;
+  loadText = NULL;
+  loadTopP = NULL;
 }
 
 
@@ -117,7 +197,7 @@ void stateLoad(CepPatterns* psP)
 //
 // stateSave - the state written; false: not (logged once until a write works again)
 //
-bool stateSave(CepPatterns* psP)
+bool stateSave(void)
 {
   static bool failing = false;
 
@@ -133,8 +213,17 @@ bool stateSave(CepPatterns* psP)
 
   long long nowMono = nowMs();
   long long nowWall = wallNow();
-  CorNode*  topP    = patternsSave(psP, &alloc, nowMono, nowWall);
+  CorNode*  topP    = corTreeObject(&alloc, NULL);
+  CorNode*  listP   = corTreeArray(&alloc, "tenants");
 
+  corTreeChildAdd(topP, corTreeInteger(&alloc, "version", 2));
+  for (int ix = 0; ix < tenants; ix++)           // each tenant's patterns
+  {
+    CorNode* entryP = patternsSave(tenantV[ix].patterns, &alloc, nowMono, nowWall);
+    corTreeChildAdd(entryP, corTreeString(&alloc, "tenant", tenantV[ix].name));
+    corTreeChildAdd(listP, entryP);
+  }
+  corTreeChildAdd(topP, listP);
   corTreeChildAdd(topP, steppersSave(&alloc, nowMono, nowWall));
 
   if (corTreeBinTablesInit(&tables, 4096, 4096))

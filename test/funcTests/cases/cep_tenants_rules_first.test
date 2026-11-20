@@ -1,0 +1,66 @@
+#
+# FILE            cep_tenants_rules_first.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# The rules tenant with data in it before corCep ever ran - a rule written while cep.so was not loaded: inside a
+# coraine that reserves tenants, the name cannot be reserved any more (an ordinary tenant of it has data). That is
+# never a reason not to run - nor for the broker not to start (a bridge's init failing stops coraine): the rules
+# tenant stays an ordinary one, the log says so, and the rules run as ever.
+#
+--NAME--
+rules tenant with data before the start: corCep runs - the broker starts, the rules run
+
+--TAGS--
+cep tenant
+
+--INIT--
+cepTestInit
+
+--RUN--
+T=$(cepTenant)
+R=${T}r
+A=${T}a
+
+echo "01. A rule in R and a switch and a lamp in A - BEFORE corCep starts; then corCep on R, A"
+echo "========================================================================================="
+CEP_IN=$R ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:door-on", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:door", "attribute": "press"}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:door", "set": {"on": true}}]}}'
+CEP_IN=$A ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:door", "type": "WallSwitch", "press": {"type": "Property", "value": 0}}'
+CEP_IN=$A ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:door", "type": "Light", "on": {"type": "Property", "value": false}}'
+cepStart --rules-tenant "$R" --tenants "$A"
+cepAwaitLog "1 rule, 1 subscription$" | sed "s/^/corCep: /"
+CEP_IN=$A subsAwait 1
+echo
+echo
+
+
+echo "02. A press in A - A's lamp on"
+echo "=============================="
+CEP_IN=$A ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:door/attrs '{"press": {"type": "Property", "value": 1}}'
+CEP_IN=$A attrAwait urn:ngsi-ld:Light:door on true
+echo "A: $(CEP_IN=$A entityKv urn:ngsi-ld:Light:door)"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. A rule in R and a switch and a lamp in A - BEFORE corCep starts; then corCep on R, A
+=========================================================================================
+POST /entities: 201
+POST /entities: 201
+POST /entities: 201
+corCep: 1 rule, 1 subscription
+
+
+02. A press in A - A's lamp on
+==============================
+PATCH /entities/urn:ngsi-ld:WallSwitch:door/attrs: 204
+A: {"id": "urn:ngsi-ld:Light:door", "on": true, "type": "Light"}
+
+

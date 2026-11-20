@@ -16,7 +16,7 @@
 #include "corTree/CorNode.h"                     // CorNode
 #include "corRest/CorRestVerb.h"                 // CorRestVerb
 
-#define CORCEP_VERSION     "0.1.0"
+#define CORCEP_VERSION     "0.2.0"
 #define CEP_SUB_PREFIX     "urn:ngsi-ld:Subscription:corcep-"
 #define CEP_SUB_RULES      "urn:ngsi-ld:Subscription:corcep-rules"
 
@@ -24,18 +24,56 @@
 
 // -----------------------------------------------------------------------------
 //
-// CepSession - one broker, one tenant, one identity; set at start
+// CepSession - one broker, one identity; set at start. The rules in one tenant, the rules tenant; the events and
+// the actions in the data tenants (tenants.c) - every one of them, unless a rule's 'tenant' names some
 //
 typedef struct CepSession
 {
   const char*  broker;                           // http://host:port, no trailing slash
-  const char*  tenant;                           // NULL: the broker's default tenant
+  const char*  rulesTenant;                      // the Rule entities, corCep's Rule subscription, the statistics (--rules-tenant, default "cep")
+  const char*  tenants;                          // --tenants: the data tenants, comma-separated ("" the default tenant); NULL: the broker's
+  bool         single;                           // --tenant T: 0.1's one tenant - the rules and the data both in T
   const char*  notifyBase;                       // the URL the broker notifies: <notifyBase>/notify/<secret>/<n>
   char         secret[33];                       // in every notification path - nothing else can send an event
   unsigned short port;                           // the listener's port
 } CepSession;
 
 extern CepSession cep;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// The tenant a broker request goes to (broker.c's NGSILD-Tenant) - per thread: the engine sets it for each event,
+// each timer, each step; the sender for each request it sends. NULL or "": the broker's default tenant.
+// tenantUse sets it, and returns the one it replaces.
+//
+extern __thread const char* cepTenantNow;
+extern const char*          tenantUse(const char* tenant);
+#define TENANT_TEXT(t)      (((t) == NULL) || ((t)[0] == 0) ? "(default)" : (t))
+
+//
+// The data tenants (tenants.c) - the engine's thread only. Each has its own patterns' state and ${...} values; a
+// rule with no 'tenant' runs in each of them, the rules tenant never one.
+//
+struct CepPatterns;
+struct CepVars;
+struct CepRules;
+
+typedef struct CepTenant
+{
+  char*                name;                     // "" the default tenant
+  struct CepPatterns*  patterns;
+  struct CepVars*      vars;
+  bool                 seen;                     // in the broker's list at the last refresh
+} CepTenant;
+
+extern CepTenant* tenantV;
+extern int        tenants;
+extern CepTenant* tenantOf(const char* name);                               // NULL: not a data tenant (yet)
+extern int        tenantsRefresh(struct CepRules* rulesP, long long now);   // the list again; the number new
+extern void       tenantsFree(void);
+extern void      (*tenantVisitHook)(void (*fn)(const char* name, void* ctx), void* ctx);   // cep.so: coraine's, in process; NULL: GET /admin/tenants
 
 
 
@@ -53,6 +91,7 @@ typedef struct CepResponse
 
 extern bool  brokerRequest(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, CorNode* bodyP, CepResponse* respP);
 extern bool  brokerRequestText(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, const char* body, CepResponse* respP);
+extern bool  brokerAdminGet(CorAlloc* allocP, const char* path, CepResponse* respP);         // <broker><path> - not under /ngsi-ld/v1, no tenant
 extern char* jsonText(CorAlloc* allocP, CorNode* nodeP);                                    // a tree as JSON text
 extern void  brokerFailed(char* why, int whyLen, const char* what, CepResponse* respP);    // engine.c - why a request failed
 
@@ -180,6 +219,8 @@ typedef struct CepRule
 {
   char*           id;
   char*           name;
+  char**          tenantV;                       // 'tenant': the data tenants it runs in ("" the default); NULL: every one
+  int             tenants;
   CepEvent*       eventV;                        // the events the pattern uses, each once
   int             events;
   CepPatternKind  kind;
@@ -241,6 +282,7 @@ typedef void (*CepLeftOutFn)(const char* id, const char* why, void* ctx);   // a
 extern CepRules* rulesLoad(void);                                                            // from the broker
 extern CepRules* rulesParse(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ctx);   // from Rule entities (keyValues)
 extern bool      durationParse(const char* s, long long* msP);                               // an ISO 8601 duration (PT0.5S, P1D) in ms; false: not one, or zero
+extern bool      ruleApplies(const CepRule* ruleP, const char* tenant);                       // does it run in <tenant> (NULL: a dry run - yes)
 extern void      rulesFree(CepRules* rulesP);
 
 
@@ -271,7 +313,7 @@ typedef struct CepPatterns CepPatterns;          // the state of one set of rule
 
 extern void         condText(CepCondition* cP, char* buf, int bufLen);        // a condition in words: a leaf its q, a group all(a; b) / any(a | b)
 extern long long    nowMs(void);                                               // CLOCK_MONOTONIC, ms
-extern CepPatterns* patternsNew(long long wallAtZeroMs);                       // 0: the host's wall clock; else a dry run's, at 'now' 0
+extern CepPatterns* patternsNew(long long wallAtZeroMs, const char* tenant);   // 0: the host's wall clock; else a dry run's, at 'now' 0. tenant: whose (NULL: a dry run's - every rule)
 extern void         patternsFree(CepPatterns* psP);
 extern void         patternsAdopt(CepPatterns* psP, CepRules* rulesP, long long now);   // a new generation: the state of unchanged rules kept
 extern void         patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch, const char* entity, const double* valueP, long long now, CepFireFn fire, void* ctx);
@@ -301,10 +343,13 @@ extern bool      varsAction(CorAlloc* allocP, CepVars* vP, CepPatterns* psP, Cep
 extern const char*            stateFile;                                          // NULL: not kept
 extern volatile sig_atomic_t  cepStopping;                                        // the signal, 0: none
 extern bool                   cepExitOnStop;                                      // util.c - true: the stop exits the process; false (a plugin): engineRun returns
-extern void                   stateLoad(CepPatterns* psP);
-extern CorNode*               steppersSave(CorAlloc* aP, long long nowMono, long long nowWall);   // engine.c - the steps running
+extern void                   stateLoad(void);                                     // into each tenant's patterns, as tenants.c makes them
+extern CorNode*               steppersSave(CorAlloc* aP, long long nowMono, long long nowWall);   // engine.c - the steps running, each with its tenant
 extern int                    steppersLoad(CorNode* topP, long long nowMono, long long nowWall);  // engine.c - before the first rules
-extern bool                   stateSave(CepPatterns* psP);
+extern bool                   stateSave(void);
+extern int                    stateLoadTenant(CepPatterns* psP, const char* tenant); // state.c - what --state had for <tenant> into psP (tenants.c, at its first sight); the rules read
+extern void                   stateRelease(void);                                   // state.c - what stateLoad read, freed
+extern const char*            stateLegacyTenant(void);                              // state.c - the tenant a 0.1 state (one tenant, unnamed) was of
 
 //
 // /dry-run (dryrun.c) - rules replayed against made-up events; built with DRY_RUN=1 (the default)

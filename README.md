@@ -37,8 +37,12 @@ HTTP.
 (`/opt/seamware/plugins/bridge/cep.so`) and start coraine with it:
 
 ```bash
-coraine --bridges cep --cep-tenant home
+coraine --bridges cep
 ```
+
+The rules are Rule entities in the tenant `cep` (`--cep-rules-tenant`), which `cep.so` reserves: coraine keeps it in
+a database of its own and leaves it out of `GET /admin/tenants`. The rules run in every other tenant - see
+[Tenants](#tenants).
 
 - **Events in process.** corCep's subscriptions name `inproc://cep/notify/<secret>/<n>`: coraine matches every write
   against them as against any subscription (q, watched attributes, tenant, the owner's rights), then hands the
@@ -46,7 +50,7 @@ coraine --bridges cep --cep-tenant home
   `inproc`; without it loaded, coraine refuses such a subscription.
 - **Requests as before.** Reads and actions go to coraine over HTTP on 127.0.0.1 (`--cep-broker`, default
   `http://127.0.0.1:1026`), with the token, the author's rights, the retries and the order per target unchanged.
-- **Options** are coraine's, prefixed `--cep-`: `--cep-tenant`, `--cep-token-env`, `--cep-token-command`,
+- **Options** are coraine's, prefixed `--cep-`: `--cep-rules-tenant`, `--cep-tenants`, `--cep-tenant`, `--cep-token-env`, `--cep-token-command`,
   `--cep-stats-interval`, `--cep-renew-interval`, `--cep-queue-max`, `--cep-retry-for`, `--cep-state`, `--cep-pdp`,
   `--cep-author-jwks`, `--cep-author-issuer`, `--cep-jwks-refresh` (`coraine -U` lists them). corCep's lines go to
   coraine's log (`-v` shows them).
@@ -76,7 +80,7 @@ that commit (`GET /build`) - coraine's CI runs these tests against the coraine i
 have no releases of their own:
 
 ```
-corCep 0.1.0
+corCep 0.2.0
   corCep     e4f1ca336bcd
   corBase    773e6fe8fe2c
   ...
@@ -117,7 +121,7 @@ repository. A pull request touching the build builds and tests both, pushing not
 ## Run
 
 ```
-corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant T]
+corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--rules-tenant cep] [--tenants A,B | --tenant T]
        [--token-env VAR | --token-command CMD] [--broker-cert cert.pem] [--stats-interval PT10S]
        [--renew-interval PT1H] [--retry-for PT30S] [--queue-max N] [--state FILE]
        [--jwks URL|FILE [--issuer ISS] [--audience AUD] [--roles-claim PATH] [--editor-role ROLE] [--jwks-refresh PT5M]]
@@ -128,7 +132,9 @@ corCep --broker http://localhost:1026 [--port 7602] [--notify-url URL] [--tenant
 | `--broker`, `-b` | the broker's base URL (required) |
 | `--port`, `-p` | the port the broker's notifications come to (default 7602) |
 | `--notify-url`, `-nu` | the URL the broker reaches corCep at (default `http://127.0.0.1:<port>`) - a broker on another host needs it |
-| `--tenant`, `-t` | the tenant (`NGSILD-Tenant`); default: the broker's default tenant |
+| `--rules-tenant`, `-rt` | the tenant the Rule entities are in - their subscription and statistics too; no rule runs in it (default `cep`). See [Tenants](#tenants) |
+| `--tenants`, `-ts` | the tenants the rules run in, comma-separated, an empty name the default tenant (`,home`: the default tenant and `home`). Default: every tenant the broker has - coraine's `GET /admin/tenants` (`--apiPlugins admin`), looked at every 10 s - or, without it, the default tenant alone |
+| `--tenant`, `-t` | one tenant for all, as corCep 0.1: the rules and the entities they run on all in this tenant (`""`: the default tenant). Not with `--rules-tenant` or `--tenants` |
 | `--token-env`, `-te` | the environment variable holding a bearer token, sent as `Authorization` - never a command-line argument. Fixed: never renewed |
 | `--token-command`, `-tc` | a command (`sh -c`) whose first line of output is the bearer token - run at start, again before the token expires, and when the broker answers 401. See [A broker that takes short-lived tokens](#a-broker-that-takes-short-lived-tokens) |
 | `--broker-cert`, `-bc` | the broker's own certificate (PEM), trusted as it is - for a broker whose certificate no CA signed and whose name is not the one in `--broker`. See [A broker with a certificate of its own](#a-broker-with-a-certificate-of-its-own) |
@@ -183,9 +189,38 @@ that failed.
 | `then[].delete` | `true` - the target deleted, one entity or every one of the group; or `"<id>"` - that entity (no `entity` besides). Gone already (404): done, no error |
 | `${...}` | in `entity`, `q`, and the values of `set` and `create`: a value of the match - see [Values from the match](#values-from-the-match) |
 | `enabled` | a Property; `false`: the rule is not run |
+| `tenant` | a Property, a String or an Array of String: the tenants the rule runs in (`""` the default tenant). None: every tenant - see [Tenants](#tenants) |
 | `location` | a GeoProperty, a Point: where the sun of an `at: "sunrise"` / `"sunset"` rule is |
 
 A rule that is not right is left out (the log says why); the others run.
+
+### Tenants
+
+The rules are in a tenant of their own, `cep` (`--rules-tenant`), and run in the others, the data tenants: the
+default tenant and every other tenant the broker has, new ones too. Write a rule with `NGSILD-Tenant: cep`. It
+then stays out of what the data tenants show - `/types`, `/attributes`, a query or a subscription without a type,
+a geo-query on its `location`.
+
+| | |
+|---|---|
+| an event | matched, counted and acted on in its own tenant: a press in `home` lights the lamp of `home`. Each tenant has its own patterns' state - a double press is two presses in one tenant - and its own `${...}` values |
+| `when.if`, a group target, a `toggle` | read in the event's tenant |
+| the actions | sent to the event's tenant; with `--pdp`, the author's rights asked for that tenant |
+| a schedule (`cron`, `at`) | fires in each tenant the rule runs in |
+| `tenant` | the rule runs in those tenants only. Naming the rules tenant: the rule is left out |
+| the statistics | on the Rule entity, in the rules tenant: `fired` counts every tenant |
+| the subscriptions | `corcep-rules` in the rules tenant; each `corcep-<n>` in every data tenant, under the same id |
+
+Which tenants there are: inside coraine (`cep.so`), coraine's own list, which leaves out the tenants coraine
+reserves. `cep.so` reserves the rules tenant itself (a coraine with `--reservedTenants`): coraine keeps it in a database of its own
+and leaves it out of `GET /admin/tenants`. If an ordinary tenant `cep` already has data (rules written while `cep.so` was not loaded), it cannot be
+reserved: `cep.so` says so in the log and runs on, the rules tenant an ordinary one - never a reason for
+corCep, or the broker, not to start. Run as a
+service, corCep reads `GET /admin/tenants` (coraine with `--apiPlugins admin`) every 10 s; start coraine with
+`--reservedTenants cep` to keep the rules tenant apart there too. Against a broker without it, `--tenants` names
+them; without that, the rules run in the default tenant only.
+
+`--tenant T` is corCep 0.1's way, kept: the rules and the entities they act on, all in T.
 
 ### Several events: `events` and `pattern`
 
@@ -647,7 +682,7 @@ them back at start.
 | written | at most once a second, when something changed; and at a stop (SIGTERM, SIGINT - corCep writes it and the statistics, then exits, within a second) |
 | how | whole, to `<file>.tmp`, flushed to the disk, renamed over the file: a crash while writing leaves the last state written, never half of one. A crash loses the last second at most |
 | format | corTree's binary format (cor), behind the 8 bytes `corCepS` + NUL |
-| read | at start, before the rules: each rule's state found again by the rule's id |
+| read | at start, before the rules: each tenant's, when the tenant is first seen - each rule's state found again by the rule's id. A state of corCep 0.1 is read as its one tenant's (`--tenant`, or the default tenant) |
 | none yet, or not a state | corCep starts empty, and the log says so |
 
 What comes back, and what does not:
@@ -749,16 +784,18 @@ corCep without it - and without corNgsild, corJsonld and corHash (137 KB of a 39
 
 ## How it talks to the broker
 
-- `urn:ngsi-ld:Subscription:corcep-rules` - every Rule entity, created, deleted, or with `when`, `then`, `enabled`
-  or `name` changed: the rules are read again. The read failing (the broker not answering, or an error): the rules
+- `urn:ngsi-ld:Subscription:corcep-rules` - in the rules tenant: every Rule entity, created, deleted, or with `when`,
+  `then`, `else`, `author`, `enabled`, `name`, `location` or `tenant` changed: the rules are read again. The read failing (the broker not answering, or an error): the rules
   running are kept, and the read is tried again - after 1 s, doubling to 30 s - till it works. At start: no rules
   till then.
-- `urn:ngsi-ld:Subscription:corcep-<n>` - one per (entity or type, attribute, `where`) the rules watch. A subscription
+- `urn:ngsi-ld:Subscription:corcep-<n>` - one per (entity or type, attribute, `where`) the rules watch, in each data
+  tenant under the same id. A subscription
   stays as long as a rule needs it - a rule added or removed does not touch the others' subscriptions, so no
   event is lost while the rules are read again.
-- At start, the `corcep-*` subscriptions of an earlier run are deleted.
-- The notifications come to `<notify-url>/notify/<secret>/<n>`; the secret is made at start - nothing else can
-  send corCep an event.
+- At start, the `corcep-*` subscriptions of an earlier run are deleted - in the rules tenant, and in each data
+  tenant when it is first seen.
+- The notifications come to `<notify-url>/notify/<secret>/<n>` from the default tenant, `.../<n>/<tenant>` from
+  another; the secret is made at start - nothing else can send corCep an event.
 
 ## Test
 

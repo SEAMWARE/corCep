@@ -17,6 +17,8 @@
 //
 // The options are coraine's, prefixed: --cep-broker, --cep-tenant, ... (coraine -U lists them).
 //
+#define _GNU_SOURCE                              // RTLD_DEFAULT
+#include <dlfcn.h>                               // dlsym, RTLD_DEFAULT
 #include <stdbool.h>                             // bool
 #include <stdio.h>                               // snprintf, vsnprintf
 #include <string.h>                              // strncmp, strlen
@@ -49,6 +51,8 @@
 //
 static char* brokerArg       = NULL;
 static char* tenantArg       = NULL;
+static char* rulesTenantArg  = NULL;
+static char* tenantsArg      = NULL;
 static char* tokenEnvArg     = NULL;
 static char* tokenCmdArg     = NULL;
 static char* stateArg        = NULL;
@@ -61,7 +65,9 @@ static int   authorRefreshArg = 300;
 static CorArg options[] =
 {
   { "--cep-broker",         "-cepb",  CorArgString,   _vp &brokerArg,       CorArgOpt, _vp "http://127.0.0.1:1026", NULL, NULL, "corCep's way to this broker, for its reads and actions: http://127.0.0.1:<--port>" },
-  { "--cep-tenant",         "-cept",  CorArgString,   _vp &tenantArg,       CorArgOpt, NULL,      NULL,  NULL,        "corCep's tenant - its rules and their entities (default: the default tenant)" },
+  { "--cep-rules-tenant",   "-ceprt", CorArgString,   _vp &rulesTenantArg,  CorArgOpt, _vp "cep", NULL,  NULL,        "the tenant the Rule entities are in, reserved: its own database, not in /admin/tenants; no rule runs in it (default: cep)" },
+  { "--cep-tenants",        "-cepts", CorArgString,   _vp &tenantsArg,      CorArgOpt, NULL,      NULL,  NULL,        "the tenants the rules run in, comma-separated, an empty name the default tenant (default: every tenant this broker has, new ones too)" },
+  { "--cep-tenant",         "-cept",  CorArgString,   _vp &tenantArg,       CorArgOpt, NULL,      NULL,  NULL,        "one tenant for all, as corCep 0.1: the rules, and the entities they run on, all in this tenant - not with --cep-rules-tenant, --cep-tenants" },
   { "--cep-token-env",      "-cepte", CorArgString,   _vp &tokenEnvArg,     CorArgOpt, NULL,      NULL,  NULL,        "the environment variable holding corCep's bearer token" },
   { "--cep-token-command",  "-ceptc", CorArgString,   _vp &tokenCmdArg,     CorArgOpt, NULL,      NULL,  NULL,        "a command printing corCep's bearer token - run again before it expires, and on a 401" },
   { "--cep-stats-interval", "-cepsi", CorArgDuration, _vp &statsInterval,   CorArgOpt, _vp 10,    _vp 0, _vp 86400,   "how often at most a rule's statistics are written to its Rule entity (PT10S; 0: at once)" },
@@ -148,7 +154,48 @@ static int cepInit(const char* configFile, const BridgeBroker* brokerP)
   }
 
   cep.broker     = brokerBase;
-  cep.tenant     = ((tenantArg != NULL) && (tenantArg[0] != 0)) ? tenantArg : NULL;
+  if (tenantArg != NULL)                         // 0.1's one tenant
+  {
+    if ((tenantsArg != NULL) || ((rulesTenantArg != NULL) && (strcmp(rulesTenantArg, "cep") != 0)))
+    {
+      logLine("--cep-tenant is one tenant for all - not with --cep-rules-tenant, --cep-tenants");
+      return BRIDGE_ERR;
+    }
+    cep.single      = true;
+    cep.rulesTenant = tenantArg;
+    cep.tenants     = tenantArg;
+  }
+  else
+  {
+    cep.rulesTenant = rulesTenantArg;
+    cep.tenants     = tenantsArg;
+  }
+
+  if ((cep.rulesTenant == NULL) || ((cep.single == false) && (cep.rulesTenant[0] == 0)))
+  {
+    logLine("--cep-rules-tenant - a tenant of its own, not the default one");
+    return BRIDGE_ERR;
+  }
+
+  //
+  // coraine's own (0.7.x on): the rules tenant reserved - its database apart, out of /admin/tenants, never a data
+  // tenant; the data tenants visited in process. An older coraine: the rules tenant an ordinary one, the tenants
+  // read with GET /admin/tenants
+  //
+  if (cep.single == false)
+  {
+    bool (*reserve)(const char*) = (bool (*)(const char*)) dlsym(RTLD_DEFAULT, "tenantReserve");
+
+    if (reserve == NULL)
+      logLine("this coraine does not reserve tenants - the rules tenant '%s' is an ordinary one", cep.rulesTenant);
+    else if (reserve(cep.rulesTenant) == false)  // never a reason not to run: the broker would not start (a bridge's init failing stops it)
+      logLine("the rules tenant '%s' is an ordinary one - a tenant of that name had data before it could be reserved."
+              " The rules run; they show in that tenant's queries, and it counts as a data tenant to other plugins."
+              " To keep them apart: move that data, or --cep-rules-tenant names another tenant", cep.rulesTenant);
+
+    tenantVisitHook = (void (*)(void (*)(const char*, void*), void*)) dlsym(RTLD_DEFAULT, "tenantDataVisit");
+  }
+
   cep.notifyBase = "inproc://cep";
   cep.port       = 0;
 
@@ -193,8 +240,8 @@ static int cepInit(const char* configFile, const BridgeBroker* brokerP)
 
   // corRestClientInit: coraine's own (the pool is the process's) - not again
 
-  logLine("corCep %s in coraine - requests to %s, tenant %s, events in process (inproc://cep)", CORCEP_VERSION, cep.broker,
-          (cep.tenant != NULL) ? cep.tenant : "(default)");
+  logLine("corCep %s in coraine - requests to %s, rules in tenant %s, run in %s, events in process (inproc://cep)", CORCEP_VERSION, cep.broker,
+          TENANT_TEXT(cep.rulesTenant), cep.single ? "it alone" : (cep.tenants != NULL) ? cep.tenants : "every tenant");
 
   if (senderStart(retryForArg) == false)
   {
@@ -233,6 +280,7 @@ static void cepClose(void)
   senderStop();                                  // no thread of ours may outlive the plugin - coraine unloads it next
   keysStop();
   subsFree();
+  tenantsFree();
   engineQueueFree();
 }
 

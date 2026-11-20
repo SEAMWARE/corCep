@@ -189,7 +189,7 @@ quiet: 3 s after the start - yes
 
 06. A state file that is not one - corCep starts empty, and says so
 ===================================================================
-state: .../state.cor - not a corCep state (version 1), starting empty
+state: .../state.cor - not a corCep state (version 1 or 2), starting empty
 
 
 07. A step running (a dimmer, +10 every 0.4 s to 100) over a stop: it goes on from its level, to 100

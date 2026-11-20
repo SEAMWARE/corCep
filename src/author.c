@@ -291,8 +291,8 @@ int authorMay(CorAlloc* allocP, const char* token, const char* method, const cha
     corTreeChildAdd(headersP, corTreeString(allocP, "authorization", auth));
     if (body != NULL)
       corTreeChildAdd(headersP, corTreeString(allocP, "content-type", "application/json"));
-    if (cep.tenant != NULL)
-      corTreeChildAdd(headersP, corTreeString(allocP, "ngsild-tenant", (char*) cep.tenant));
+    if ((cepTenantNow != NULL) && (cepTenantNow[0] != 0))                    // the tenant the request goes to
+      corTreeChildAdd(headersP, corTreeString(allocP, "ngsild-tenant", (char*) cepTenantNow));
 
     corTreeChildAdd(requestP, corTreeString(allocP, "method", (char*) method));
     corTreeChildAdd(requestP, corTreeString(allocP, "path", (char*) path));

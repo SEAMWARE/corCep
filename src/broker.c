@@ -31,7 +31,7 @@
 //
 // requestOnce - <broker>/ngsi-ld/v1<path>[?query], bodyP rendered as JSON; the answer parsed
 //
-static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, const char* body, CepResponse* respP)
+static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* base, const char* path, const char* query, const char* body, CepResponse* respP)
 {
   CorRestKeyValue  headers[5];
   int              headerCount = 0;
@@ -45,7 +45,7 @@ static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, co
 
   int   urlLen = strlen(cep.broker) + strlen(path) + ((query != NULL) ? strlen(query) : 0) + 32;
   char* url    = corAlloc(allocP, urlLen);
-  snprintf(url, urlLen, "%s/ngsi-ld/v1%s%s%s", cep.broker, path, ((query != NULL) && (query[0] != 0)) ? "?" : "", (query != NULL) ? query : "");
+  snprintf(url, urlLen, "%s%s%s%s%s", cep.broker, base, path, ((query != NULL) && (query[0] != 0)) ? "?" : "", (query != NULL) ? query : "");
 
   headers[headerCount].key   = (char*) "Accept";
   headers[headerCount].value = (char*) "application/json";
@@ -58,10 +58,10 @@ static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, co
     ++headerCount;
   }
 
-  if (cep.tenant != NULL)
+  if ((base[0] != 0) && (cepTenantNow != NULL) && (cepTenantNow[0] != 0))   // the tenant of this thread's work (tenantUse)
   {
     headers[headerCount].key   = (char*) "NGSILD-Tenant";
-    headers[headerCount].value = (char*) cep.tenant;
+    headers[headerCount].value = (char*) cepTenantNow;
     ++headerCount;
   }
 
@@ -134,13 +134,30 @@ static bool requestOnce(CorAlloc* allocP, CorRestVerb verb, const char* path, co
 //
 bool brokerRequestText(CorAlloc* allocP, CorRestVerb verb, const char* path, const char* query, const char* body, CepResponse* respP)
 {
-  bool ok = requestOnce(allocP, verb, path, query, body, respP);
+  bool ok = requestOnce(allocP, verb, "/ngsi-ld/v1", path, query, body, respP);
 
   if ((ok == true) && (respP->status == 401) && (tokenRefused() == true))
   {
     logLine("the broker refused the token (401) - a new one, the request again");
-    return requestOnce(allocP, verb, path, query, body, respP);
+    return requestOnce(allocP, verb, "/ngsi-ld/v1", path, query, body, respP);
   }
+
+  return ok;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// brokerAdminGet - GET <broker><path>: a path of the broker's own, not NGSI-LD's (coraine's /admin/tenants); no
+// tenant, corCep's token
+//
+bool brokerAdminGet(CorAlloc* allocP, const char* path, CepResponse* respP)
+{
+  bool ok = requestOnce(allocP, CorVerbGet, "", path, NULL, NULL, respP);
+
+  if ((ok == true) && (respP->status == 401) && (tokenRefused() == true))
+    return requestOnce(allocP, CorVerbGet, "", path, NULL, NULL, respP);
 
   return ok;
 }

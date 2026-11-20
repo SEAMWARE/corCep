@@ -967,7 +967,7 @@ static CorNode* replay(CorAlloc* aP, CorNode* bodyP, char* why, int whyLen)
   LeftOut leftOut = { aP, corTreeArray(aP, "leftOut") };
 
   dr.rulesP = rulesParse(rulesP, (time_t) (dr.startMs / 1000), leftOutCb, &leftOut);
-  dr.psP    = patternsNew(dr.startMs);
+  dr.psP    = patternsNew(dr.startMs, NULL);
   dr.varsP  = varsNew();
   dr.firesP = corTreeArray(aP, "fires");
 

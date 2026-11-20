@@ -38,6 +38,8 @@
 //
 static char* brokerArg    = NULL;
 static char* tenantArg    = NULL;
+static char* rulesTenantArg = NULL;
+static char* tenantsArg   = NULL;
 static char* tokenEnvArg  = NULL;
 static char* tokenCmdArg  = NULL;
 static char* brokerCertArg = NULL;
@@ -68,7 +70,9 @@ static CorArg options[] =
   { "--broker",     "-b",  CorArgString, &brokerArg,    CorArgReq, NULL,      NULL,  NULL,        "the broker's base URL: http://host:port" },
   { "--port",       "-p",  CorArgInt,    &portArg,      CorArgOpt, _vp 7602,  _vp 1, _vp 65535,   "the port the broker's notifications come to" },
   { "--notify-url", "-nu", CorArgString, &notifyUrlArg, CorArgOpt, NULL,      NULL,  NULL,        "the URL the broker reaches corCep at (default: http://127.0.0.1:<port>)" },
-  { "--tenant",     "-t",  CorArgString, &tenantArg,    CorArgOpt, NULL,      NULL,  NULL,        "the tenant (default: the broker's default tenant)" },
+  { "--rules-tenant", "-rt", CorArgString, &rulesTenantArg, CorArgOpt, _vp "cep", NULL, NULL,     "the tenant the Rule entities are in - their subscription and statistics too; no rule runs in it (default: cep)" },
+  { "--tenants",    "-ts", CorArgString, &tenantsArg,   CorArgOpt, NULL,      NULL,  NULL,        "the tenants the rules run in, comma-separated, an empty name the default tenant (default: the broker's - coraine's GET /admin/tenants, refreshed - or the default tenant alone)" },
+  { "--tenant",     "-t",  CorArgString, &tenantArg,    CorArgOpt, NULL,      NULL,  NULL,        "one tenant for all, as corCep 0.1: the rules, and the entities they run on, all in this tenant (\"\": the default tenant) - not with --rules-tenant, --tenants" },
   { "--token-env",  "-te", CorArgString, &tokenEnvArg,  CorArgOpt, NULL,      NULL,  NULL,        "the environment variable holding the bearer token sent to the broker" },
   { "--token-command", "-tc", CorArgString, &tokenCmdArg, CorArgOpt, NULL,     NULL,  NULL,        "a command printing the bearer token - run again before it expires, and on a 401" },
   { "--broker-cert", "-bc", CorArgString, &brokerCertArg, CorArgOpt, NULL,     NULL,  NULL,        "the broker's own certificate (PEM): trusted as it is, instead of the CA store and the host name" },
@@ -203,7 +207,28 @@ int main(int argC, char* argV[])
   trimSlash(notifyBase);
 
   cep.broker     = brokerArg;
-  cep.tenant     = ((tenantArg != NULL) && (tenantArg[0] != 0)) ? tenantArg : NULL;
+  if (tenantArg != NULL)                         // 0.1's one tenant
+  {
+    if ((tenantsArg != NULL) || ((rulesTenantArg != NULL) && (strcmp(rulesTenantArg, "cep") != 0)))
+    {
+      fprintf(stderr, "corCep: --tenant is one tenant for all - not with --rules-tenant, --tenants\n");
+      return 1;
+    }
+    cep.single      = true;
+    cep.rulesTenant = tenantArg;
+    cep.tenants     = tenantArg;
+  }
+  else
+  {
+    cep.rulesTenant = rulesTenantArg;
+    cep.tenants     = tenantsArg;
+  }
+
+  if ((cep.rulesTenant == NULL) || ((cep.single == false) && (cep.rulesTenant[0] == 0)))
+  {
+    fprintf(stderr, "corCep: --rules-tenant - a tenant of its own, not the default one\n");
+    return 1;
+  }
   cep.notifyBase = notifyBase;
   cep.port       = (unsigned short) portArg;
 
@@ -287,8 +312,8 @@ int main(int argC, char* argV[])
 
   corRestClientInit(8, 30, "corCep/" CORCEP_VERSION);
 
-  logLine("corCep %s - broker %s, tenant %s, notifications on port %d (%s)", CORCEP_VERSION, cep.broker,
-          (cep.tenant != NULL) ? cep.tenant : "(default)", cep.port, cep.notifyBase);
+  logLine("corCep %s - broker %s, rules in tenant %s, run in %s, notifications on port %d (%s)", CORCEP_VERSION, cep.broker,
+          TENANT_TEXT(cep.rulesTenant), cep.single ? "it alone" : (cep.tenants != NULL) ? cep.tenants : "every tenant", cep.port, cep.notifyBase);
 
   if (listenerStart() == false)
     return 1;
