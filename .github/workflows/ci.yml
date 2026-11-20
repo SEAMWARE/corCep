@@ -79,3 +79,73 @@ jobs:
             stack/corCep/test/funcTests/cases/*.diff
             stack/corCep/test/funcTests/cases/*.stderr
             stack/functest/
+
+  #
+  # The plugin form against coraine's main: THIS PR's cep.so inside a coraine built from main, the 38 plugin-form
+  # tests (make functest-plugin). coraine's CI runs the same tests with corCep's main against ITS change; this job is
+  # the other direction - a corCep change that breaks inside coraine (the bridge contract, the exported cor-lib
+  # symbols coraine provides) is red here, not first in coraine's CI after the merge.
+  #
+  # The job IN the CI image (as coraine's own CI): bootstrap.sh installs the cor libs and, through the umbrella,
+  # this checkout's cep.so (COR_LIBS_KEEP: stack/corCep is the PR); coraine main is built and installed with make di.
+  #
+  plugin-vs-coraine-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    container:
+      image: quay.io/seamware/coraine-ci:2026-11-18-30e070f   # coraine's ci.yml's
+
+    env:
+      SEAMWARE_PLUGIN_DIR: /opt/seamware/plugins
+      CORJSON: ${{ github.workspace }}/stack/corJson/bin/corJson
+
+    steps:
+      - name: Check out corCep
+        uses: actions/checkout@v4
+        with:
+          path: stack/corCep
+
+      - name: Check out corLibs
+        uses: actions/checkout@v4
+        with:
+          repository: SEAMWARE-cor/corLibs
+          path: stack/corLibs
+
+      - name: Check out coraine (main)
+        uses: actions/checkout@v4
+        with:
+          repository: SEAMWARE/coraine
+          ref: main
+          path: stack/coraine
+
+      - name: Clone and build the cor stack
+        working-directory: stack/corLibs
+        run: COR_LIBS_KEEP=corCep ./bootstrap.sh
+
+      - name: Build and install coraine
+        working-directory: stack/coraine
+        run: |
+          mkdir -p /opt/seamware/plugins /opt/seamware/etc
+          make di
+
+      - name: The plugin-form tests (this cep.so in coraine main)
+        timeout-minutes: 15
+        working-directory: stack/corCep
+        run: |
+          sha=$(git -C ../coraine rev-parse --short HEAD)
+          cmp /usr/local/bin/coraine ../coraine/BUILD_DEBUG/src/app/coraine/coraine
+          echo "coraine main $sha: $(/usr/local/bin/coraine --version | head -1)"
+          make functest-plugin CORTEST=$GITHUB_WORKSPACE/stack/corLibs/bin/corTest CORTEST_ARGS=--noColor \
+               CEP_CORAINE=/usr/local/bin/coraine CEP_SEAMWARE_PLUGINS=/opt/seamware/plugins CEP_CORAINE_SHA=$sha
+
+      - name: Keep what a failing test left
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: functests-plugin
+          path: |
+            stack/corCep/test/funcTests/cases/*.out
+            stack/corCep/test/funcTests/cases/*.diff
+            /tmp/corcep-functest/
+            /tmp/corcep-plugin/coraine.log
