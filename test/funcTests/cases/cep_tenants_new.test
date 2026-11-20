@@ -1,0 +1,80 @@
+#
+# FILE            cep_tenants_new.test
+#
+# Copyright 2026 Seamware
+# SPDX-License-Identifier: Apache-2.0
+#
+# Every tenant, new ones too (corCep 0.2): without --tenants, the rules run in every tenant the broker has - read
+# from coraine (in process for cep.so, GET /admin/tenants for the standalone), looked at again every 10 s. A tenant
+# made after corCep started gets the rules: its subscriptions made, its events acted on. The rules tenant is never
+# one of them.
+#
+--NAME--
+rules tenant: a tenant made after the start gets the rules
+
+--TAGS--
+cep tenant
+
+--INIT--
+cepTestInit
+
+--RUN--
+T=$(cepTenant)
+R=${T}r
+N=${T}n
+
+echo "01. corCep started on R alone - no --tenants; a rule in R"
+echo "=========================================================="
+cepStart --rules-tenant "$R"                     # first: cep.so reserves R before anything is in it
+CEP_IN=$R ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Rule:porch-on", "type": "Rule",
+  "when": {"type": "JsonProperty", "json": {"entity": "urn:ngsi-ld:WallSwitch:porch", "attribute": "press"}},
+  "then": {"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:porch", "set": {"on": true}}]}}'
+cepAwaitLog "1 rule, 1 subscription$" | sed "s/^/corCep: /"
+echo "R a data tenant: $(grep -c "tenant $R: the rules run in it" "$CEP_TEST_DIR/corCep.log")"
+echo
+echo
+
+
+echo "02. Tenant N made - a switch and a lamp in it; within 10 s the rules run in it too"
+echo "=================================================================================="
+CEP_IN=$N ngsildStatus POST /entities '{"id": "urn:ngsi-ld:WallSwitch:porch", "type": "WallSwitch", "press": {"type": "Property", "value": 0}}'
+CEP_IN=$N ngsildStatus POST /entities '{"id": "urn:ngsi-ld:Light:porch", "type": "Light", "on": {"type": "Property", "value": false}}'
+cepAwaitLog "tenant $N: the rules run in it" 15 | sed "s/$N/<N>/"
+CEP_IN=$N subsAwait 1
+echo
+echo
+
+
+echo "03. A press in N - N's lamp on"
+echo "=============================="
+CEP_IN=$N ngsildStatus PATCH /entities/urn:ngsi-ld:WallSwitch:porch/attrs '{"press": {"type": "Property", "value": 1}}'
+CEP_IN=$N attrAwait urn:ngsi-ld:Light:porch on true
+echo "N: $(CEP_IN=$N entityKv urn:ngsi-ld:Light:porch)"
+echo
+echo
+
+
+--TEARDOWN--
+cepStop
+
+--EXPECT--
+01. corCep started on R alone - no --tenants; a rule in R
+==========================================================
+POST /entities: 201
+corCep: 1 rule, 1 subscription
+R a data tenant: 0
+
+
+02. Tenant N made - a switch and a lamp in it; within 10 s the rules run in it too
+==================================================================================
+POST /entities: 201
+POST /entities: 201
+tenant <N>: the rules run in it
+
+
+03. A press in N - N's lamp on
+==============================
+PATCH /entities/urn:ngsi-ld:WallSwitch:porch/attrs: 204
+N: {"id": "urn:ngsi-ld:Light:porch", "on": true, "type": "Light"}
+
+

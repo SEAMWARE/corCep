@@ -46,7 +46,7 @@ static void requestCb(CorHttpConn* connP)
     return;
   }
 
-  char which[32];
+  char which[128];
   int  whichLen = connP->path.len - prefixLen;
 
   if (whichLen >= (int) sizeof(which))

@@ -10,6 +10,7 @@
 #include <stdio.h>                               // snprintf
 #include <stdlib.h>                              // calloc, free, strtod
 #include <string.h>                              // strcmp
+#include <strings.h>                             // strcasecmp
 
 #include "corAlloc/corAlloc.h"                   // corAlloc
 #include "corAlloc/corAllocBufferInit.h"         // corAllocBufferInit
@@ -1244,6 +1245,59 @@ static CepRules* rulesParseX(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, 
     ruleP->name = corAllocStrdup(&rP->alloc, (str(eP, "name") != NULL) ? str(eP, "name") : id);
 
     //
+    // 'tenant': the data tenants it runs in - a String, or an Array of String ("" the default tenant); none: every one
+    //
+    CorNode* tenantP = corTreeLookup(eP, "tenant");
+    if (tenantP != NULL)
+    {
+      int n = 0;
+
+      if (tenantP->type == CorString)
+        n = 1;
+      else if (tenantP->type == CorArray)
+      {
+        for (CorNode* tP = tenantP->value.head; tP != NULL; tP = tP->next)
+        {
+          if (tP->type != CorString)
+          {
+            snprintf(why, sizeof(why), "'tenant': an Array of String - %s is not one", jsonText(&rP->alloc, tP));
+            goto bad;
+          }
+          ++n;
+        }
+      }
+      else
+      {
+        snprintf(why, sizeof(why), "'tenant': a String, or an Array of String");
+        goto bad;
+      }
+
+      if (n == 0)
+      {
+        snprintf(why, sizeof(why), "'tenant': an empty list - the rule would run nowhere");
+        goto bad;
+      }
+
+      ruleP->tenantV = (char**) corAlloc(&rP->alloc, n * sizeof(char*));
+      if (tenantP->type == CorString)
+        ruleP->tenantV[ruleP->tenants++] = corAllocStrdup(&rP->alloc, tenantP->value.s);
+      else
+      {
+        for (CorNode* tP = tenantP->value.head; tP != NULL; tP = tP->next)
+          ruleP->tenantV[ruleP->tenants++] = corAllocStrdup(&rP->alloc, tP->value.s);
+      }
+
+      for (int ix = 0; ix < ruleP->tenants; ix++)
+      {
+        if ((cep.single == false) && (cep.rulesTenant != NULL) && (strcasecmp(ruleP->tenantV[ix], cep.rulesTenant) == 0))
+        {
+          snprintf(why, sizeof(why), "'tenant': '%s' is the rules tenant - no rule runs there", ruleP->tenantV[ix]);
+          goto bad;
+        }
+      }
+    }
+
+    //
     // --pdp: the author's signature first (author.c) - a rule changed without its editor does not run
     //
     if (signedOnly && (authorVerify(&rP->alloc, str(eP, "author"), json(eP, "when"), json(eP, "then"), json(eP, "else"), &ruleP->author, why, sizeof(why)) == false))
@@ -1354,6 +1408,27 @@ static CepRules* rulesParseX(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, 
 
 // -----------------------------------------------------------------------------
 //
+// ruleApplies - does the rule run in <tenant>: no 'tenant' - in every one; else in those it names (tenant names
+// are case-insensitive, as NGSI-LD brokers take them). NULL: a dry run's patterns - yes
+//
+bool ruleApplies(const CepRule* ruleP, const char* tenant)
+{
+  if ((tenant == NULL) || (ruleP->tenantV == NULL))
+    return true;
+
+  for (int ix = 0; ix < ruleP->tenants; ix++)
+  {
+    if (strcasecmp(ruleP->tenantV[ix], tenant) == 0)
+      return true;
+  }
+
+  return false;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // rulesParse - the rules of Rule entities, unsigned ones too (/dry-run: drafts)
 //
 CepRules* rulesParse(CorNode* arrayP, time_t now, CepLeftOutFn leftOut, void* ctx)
@@ -1373,7 +1448,9 @@ CepRules* rulesLoad(void)
   corAllocBufferInit(&alloc, NULL, 0, 256 * 1024, NULL, "corCep rules read");
 
   CepResponse resp;
-  bool got = cepTransport->get(&alloc, "/entities", "type=Rule&options=keyValues&limit=1000", &resp);
+  const char* before = tenantUse(cep.rulesTenant);   // the rules' own tenant
+  bool        got    = cepTransport->get(&alloc, "/entities", "type=Rule&options=keyValues&limit=1000", &resp);
+  tenantUse(before);
 
   if (got && nonexistentTenant(&resp))
   {

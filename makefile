@@ -58,7 +58,7 @@ CFLAGS      = $(OPT) -I$(OBJDIR) -Wall -Werror -Wundef -Wno-format-truncation -f
 # The standalone corCep - the engine on NGSI-LD over HTTP: main, the requests, the subscriptions and their
 # listener, the actions' queues, the token, /dry-run.
 #
-ENGINE_SOURCES = src/engine.c src/rules.c src/pattern.c src/schedule.c src/state.c src/vars.c src/keys.c src/author.c src/util.c
+ENGINE_SOURCES = src/engine.c src/tenants.c src/rules.c src/pattern.c src/schedule.c src/state.c src/vars.c src/keys.c src/author.c src/util.c
 CEP_SOURCES    = src/corCep.c src/transportHttp.c src/broker.c src/subs.c src/listener.c src/token.c src/sender.c $(DRY_RUN_SOURCES)
 SOURCES        = $(ENGINE_SOURCES) $(CEP_SOURCES)
 OBJDIR      = obj/$(BUILD)

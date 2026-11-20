@@ -78,10 +78,15 @@ cepTestInit() {
 
 # -----------------------------------------------------------------------------
 #
-# cepTenant - the test's tenant
+# cepTenant - the test's tenant; CEP_IN=<tenant> before a helper: that one instead (a test of several tenants:
+# CEP_IN=$A ngsildStatus POST ...)
 #
 cepTenant() {
-  cat "$CEP_TEST_DIR/tenant"
+  if [ -n "$CEP_IN" ]; then
+    echo "$CEP_IN"
+  else
+    cat "$CEP_TEST_DIR/tenant"
+  fi
 }
 
 
@@ -102,7 +107,8 @@ ngsild() {
 
 # -----------------------------------------------------------------------------
 #
-# cepStart [options...] - corCep against the broker, in the test's tenant; returns once its first rules are read
+# cepStart [options...] - corCep against the broker, in the test's tenant (--tenant, 0.1's one tenant - unless the
+# options name --rules-tenant or --tenants); returns once its first rules are read
 #
 # The log (stderr) goes to $CEP_TEST_DIR/corCep.log - a test waits on it with cepAwaitLog, and it is kept for
 # reading when a test fails.
@@ -110,6 +116,9 @@ ngsild() {
 # CEP_BROKER_URL: another broker URL for corCep (a test's proxy - ftFlakyBroker.py); default the test broker
 cepStart() {
   rm -f "$CEP_TEST_DIR/corCep.log"               # not the last corCep's: its "rules" line is not this one's
+
+  local -a one=(--tenant "$(cepTenant)")
+  [[ " $* " == *" --rules-tenant "* || " $* " == *" --tenants "* ]] && one=()
 
   if [ "$CEP_PLUGIN" == "1" ]; then
     local -a cepArgs=() arg
@@ -120,12 +129,12 @@ cepStart() {
       esac
     done
     cepPluginBroker --bridges cep --cep-broker "${CEP_BROKER_URL:-http://$CEP_BROKER_HOST:$CEP_BROKER_PORT}" \
-                    --cep-tenant "$(cepTenant)" "${cepArgs[@]}" || return 1
+                    "${one[@]/#--/--cep-}" "${cepArgs[@]}" || return 1
     cepAwaitLog " rules\?, [0-9]* subscriptions\?$" 10 > /dev/null
     return
   fi
 
-  $CEP_RUN "$CEP_BIN" --broker "${CEP_BROKER_URL:-http://$CEP_BROKER_HOST:$CEP_BROKER_PORT}" --port "$CEP_PORT" --tenant "$(cepTenant)" "$@" \
+  $CEP_RUN "$CEP_BIN" --broker "${CEP_BROKER_URL:-http://$CEP_BROKER_HOST:$CEP_BROKER_PORT}" --port "$CEP_PORT" "${one[@]}" "$@" \
              > "$CEP_TEST_DIR/corCep.log" 2>&1 &
   echo $! > "$CEP_TEST_DIR/corCep.pid"
 
@@ -233,7 +242,7 @@ cepPluginBroker() {
   done
   ln -sf "$CEP_PLUGIN_SO" "$run/plugins/bridge/cep.so"
 
-  local -a common=(--port "$CEP_BROKER_PORT" --database corDB --dbDir "$CEP_TEST_DIR/db" --logDir "$run/log")
+  local -a common=(--port "$CEP_BROKER_PORT" --database corDB --dbDir "$CEP_TEST_DIR/db" --logDir "$run/log" --apiPlugins admin)   # admin: GET /admin/tenants
 
   if [ $# -gt 0 ]; then
     SEAMWARE_PLUGIN_DIR="$run/plugins" $CEP_RUN "$CEP_CORAINE" -v "${common[@]}" "$@" \

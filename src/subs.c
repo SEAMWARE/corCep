@@ -7,7 +7,8 @@
 // corCep's subscriptions, all with the id prefix urn:ngsi-ld:Subscription:corcep-:
 //   corcep-rules  every Rule entity - a rule made, changed or deleted reloads the rules
 //   corcep-<n>    one per watch (entity or type, attribute, q) - its notifications are events
-// The notifications go to <notifyBase>/notify/<secret>/<rules | n>.
+// The Rule subscription is in the rules tenant; each watch's is in every data tenant, the same id in each.
+// The notifications go to <notifyBase>/notify/<secret>/<rules | n | n/tenant> - n alone: the default tenant.
 //
 #include <stdio.h>                               // snprintf
 #include <stdlib.h>                              // realloc, free
@@ -29,8 +30,10 @@
 typedef struct Sub
 {
   char*  key;                                    // "<entity or type>|<attribute>|<q>", malloc'd
-  int    no;                                     // corcep-<no>
+  int    no;                                     // corcep-<no> - the same id in each data tenant
   bool   used;
+  bool*  inV;                                    // made in tenantV[ix] (tenants.c - a tenant keeps its index), malloc'd
+  int    inN;
 } Sub;
 
 static Sub*  subV   = NULL;
@@ -101,6 +104,7 @@ static bool subCreate(CorAlloc* allocP, const char* id, const char* entity, cons
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "enabled"));
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "name"));
     corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "location"));         // sunrise / sunset: the rule's place
+    corTreeChildAdd(watchedP, corTreeString(allocP, NULL, "tenant"));           // the tenants it runs in
     corTreeChildAdd(subP, watchedP);
 
     CorNode* triggersP = corTreeArray(allocP, "notificationTrigger");
@@ -143,24 +147,37 @@ static bool subCreate(CorAlloc* allocP, const char* id, const char* entity, cons
 
 // -----------------------------------------------------------------------------
 //
-// subsInit - the subscriptions of an earlier run removed (their notifications would go to an old secret), the
-// Rule subscription made
+// inTenant - " (tenant <t>)" for a log line - "" with --tenant (one tenant: nothing to tell apart)
 //
-bool subsInit(void)
+static const char* inTenant(const char* tenant)
 {
-  CorAlloc    alloc;
+  static __thread char text[128];
+
+  if (cep.single)
+    return "";
+
+  snprintf(text, sizeof(text), " (tenant %s)", TENANT_TEXT(tenant));
+  return text;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// sweep - the subscriptions of an earlier run removed from the tenant at work (their notifications would go to an
+// old secret); keepRules: not the Rule subscription (--tenant: the rules and the data in one tenant)
+//
+static bool sweep(CorAlloc* allocP, bool keepRules)
+{
   CepResponse resp;
-
-  corAllocBufferInit(&alloc, NULL, 0, 64 * 1024, NULL, "corCep subsInit");
-
-  bool got = brokerRequest(&alloc, CorVerbGet, "/subscriptions", "limit=1000", NULL, &resp);
+  bool        got = brokerRequest(allocP, CorVerbGet, "/subscriptions", "limit=1000", NULL, &resp);
 
   if (got && nonexistentTenant(&resp))
-    resp.body = NULL;                            // a tenant with nothing in it yet: no subscriptions to remove
-  else if ((got == false) || (resp.status != 200))
+    return true;                                 // a tenant with nothing in it yet: no subscriptions to remove
+
+  if ((got == false) || (resp.status != 200))
   {
-    logLine("GET /subscriptions: %s", (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
-    corAllocBufferReset(&alloc, false);
+    logLine("GET /subscriptions%s: %s", inTenant(cepTenantNow), (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
     return false;
   }
 
@@ -169,12 +186,33 @@ bool subsInit(void)
     for (CorNode* sP = resp.body->value.head; sP != NULL; sP = sP->next)
     {
       CorNode* idP = corTreeLookup(sP, "id");
-      if ((idP != NULL) && (idP->type == CorString) && (strncmp(idP->value.s, CEP_SUB_PREFIX, sizeof(CEP_SUB_PREFIX) - 1) == 0))
-        subDelete(&alloc, idP->value.s);
+
+      if ((idP == NULL) || (idP->type != CorString) || (strncmp(idP->value.s, CEP_SUB_PREFIX, sizeof(CEP_SUB_PREFIX) - 1) != 0))
+        continue;
+      if (keepRules && (strcmp(idP->value.s, CEP_SUB_RULES) == 0))
+        continue;
+      subDelete(allocP, idP->value.s);
     }
   }
 
-  bool ok = subCreate(&alloc, CEP_SUB_RULES, NULL, "Rule", NULL, NULL, "rules");
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// subsInit - in the rules tenant: the subscriptions of an earlier run removed, the Rule subscription made
+//
+bool subsInit(void)
+{
+  CorAlloc alloc;
+
+  corAllocBufferInit(&alloc, NULL, 0, 64 * 1024, NULL, "corCep subsInit");
+
+  const char* before = tenantUse(cep.rulesTenant);
+  bool        ok     = sweep(&alloc, false) && subCreate(&alloc, CEP_SUB_RULES, NULL, "Rule", NULL, NULL, "rules");
+  tenantUse(before);
 
   corAllocBufferReset(&alloc, false);
   return ok;
@@ -199,12 +237,12 @@ static int subRenew(CorAlloc* allocP, const char* id)
 
   if (brokerRequest(allocP, CorVerbPatch, path, NULL, bodyP, &resp) == false)
   {
-    logLine("renewing subscription %s: %s", id, resp.error);
+    logLine("renewing subscription %s%s: %s", id, inTenant(cepTenantNow), resp.error);
     return 0;
   }
 
   if ((resp.status != 204) && (resp.status != 404))
-    logLine("renewing subscription %s: %d %s", id, resp.status, (resp.text != NULL) ? resp.text : "no body");
+    logLine("renewing subscription %s%s: %d %s", id, inTenant(cepTenantNow), resp.status, (resp.text != NULL) ? resp.text : "no body");
 
   return resp.status;
 }
@@ -213,17 +251,17 @@ static int subRenew(CorAlloc* allocP, const char* id)
 
 // -----------------------------------------------------------------------------
 //
-// subsRenew - every subscription of corCep renewed (--renew-interval). One the broker no longer has is made again:
-// the Rule subscription here, an event one by the rules read again - true: read them.
+// subsRenew - every subscription of corCep renewed (--renew-interval), in every tenant. One the broker no longer
+// has is made again: the Rule subscription here, an event one by the rules read again - true: read them.
 //
 bool subsRenew(void)
 {
   CorAlloc alloc;
   bool     reload = false;
-  int      kept   = 0;
 
   corAllocBufferInit(&alloc, NULL, 0, 64 * 1024, NULL, "corCep subsRenew");
 
+  const char* before = tenantUse(cep.rulesTenant);
   if (subRenew(&alloc, CEP_SUB_RULES) == 404)
   {
     logLine("subscription %s gone - made again", CEP_SUB_RULES);
@@ -236,16 +274,21 @@ bool subsRenew(void)
     char id[128];
 
     snprintf(id, sizeof(id), "%s%d", CEP_SUB_PREFIX, subV[ix].no);
-    if (subRenew(&alloc, id) == 404)
+    for (int tx = 0; (tx < subV[ix].inN) && (tx < tenants); tx++)
     {
-      logLine("subscription %s gone - made again", id);
-      free(subV[ix].key);                        // forgotten: subsApply gives the watch a new one
-      reload = true;
-      continue;
+      if (subV[ix].inV[tx] == false)
+        continue;
+
+      tenantUse(tenantV[tx].name);
+      if (subRenew(&alloc, id) == 404)
+      {
+        logLine("subscription %s%s gone - made again", id, inTenant(tenantV[tx].name));
+        subV[ix].inV[tx] = false;                // subsApply makes it again
+        reload           = true;
+      }
     }
-    subV[kept++] = subV[ix];
   }
-  subN = kept;
+  tenantUse(before);
 
   corAllocBufferReset(&alloc, false);
   return reload;
@@ -267,15 +310,89 @@ static void watchKey(CepWatch* wP, char* key, int keyLen)
 
 // -----------------------------------------------------------------------------
 //
-// subsApply - every watch of the generation gets its subscription: the one it had, or a new one; the
-// subscriptions no watch has any more are deleted - after, so no event is lost in between
+// subInTenants - a watch's subscription made in each data tenant it is not in yet; false: one failed
+//
+static bool subInTenants(CorAlloc* allocP, Sub* sP, CepWatch* wP)
+{
+  bool ok = true;
+
+  if (sP->inN < tenants)
+  {
+    bool* vP = realloc(sP->inV, tenants * sizeof(bool));
+    if (vP == NULL)
+      return false;
+    for (int tx = sP->inN; tx < tenants; tx++)
+      vP[tx] = false;
+    sP->inV = vP;
+    sP->inN = tenants;
+  }
+
+  for (int tx = 0; tx < tenants; tx++)
+  {
+    if (sP->inV[tx] == true)
+      continue;
+
+    char id[128];
+    char which[128];
+    const char* name = tenantV[tx].name;
+
+    snprintf(id, sizeof(id), "%s%d", CEP_SUB_PREFIX, sP->no);
+    if (name[0] == 0)
+      snprintf(which, sizeof(which), "%d", sP->no);                 // the default tenant: as corCep 0.1
+    else
+      snprintf(which, sizeof(which), "%d/%s", sP->no, name);
+
+    tenantUse(name);
+    if (subCreate(allocP, id, wP->entity, wP->type, wP->attribute, wP->q, which) == true)
+      sP->inV[tx] = true;
+    else
+      ok = false;
+  }
+  tenantUse(NULL);
+
+  return ok;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// subsApply - every watch of the generation gets its subscription in every data tenant: the one it had, or a new
+// one; the subscriptions no watch has any more are deleted - after, so no event is lost in between. A tenant seen
+// for the first time is swept first - an earlier run's subscriptions in it removed.
 //
 bool subsApply(CepRules* rulesP)
 {
-  CorAlloc alloc;
-  bool     ok = true;
+  static bool* sweptV = NULL;
+  static int   swept  = 0;
+  CorAlloc     alloc;
+  bool         ok = true;
 
   corAllocBufferInit(&alloc, NULL, 0, 64 * 1024, NULL, "corCep subsApply");
+
+  if (swept < tenants)
+  {
+    bool* vP = realloc(sweptV, tenants * sizeof(bool));
+    if (vP != NULL)
+    {
+      for (int tx = swept; tx < tenants; tx++)
+        vP[tx] = false;
+      sweptV = vP;
+      swept  = tenants;
+    }
+  }
+  for (int tx = 0; tx < swept; tx++)
+  {
+    if (sweptV[tx] == true)
+      continue;
+
+    tenantUse(tenantV[tx].name);
+    if (cep.single)                              // the rules tenant itself: subsInit swept it
+      sweptV[tx] = true;
+    else
+      sweptV[tx] = sweep(&alloc, false);         // 0.1's Rule subscription too: the rules are in the rules tenant now
+  }
+  tenantUse(NULL);
 
   for (int ix = 0; ix < subN; ix++)
     subV[ix].used = false;
@@ -293,41 +410,37 @@ bool subsApply(CepRules* rulesP)
         break;
     }
 
-    if (ix < subN)
+    if (ix == subN)                              // a new watch: a number of its own
     {
-      subV[ix].used = true;
-      wP->sub       = subV[ix].no;
-      continue;
+      if (subN == subMax)
+      {
+        int  max = (subMax == 0) ? 16 : subMax * 2;
+        Sub* vP  = realloc(subV, max * sizeof(Sub));
+
+        if (vP == NULL)
+        {
+          wP->sub = -1;
+          ok      = false;
+          continue;
+        }
+        subV   = vP;
+        subMax = max;
+      }
+      memset(&subV[subN], 0, sizeof(Sub));
+      subV[subN].key = strdup(key);
+      subV[subN].no  = nextNo++;
+      ++subN;
     }
 
-    char id[128];
-    char which[16];
-    int  no = nextNo++;
+    subV[ix].used = true;
+    wP->sub       = subV[ix].no;
 
-    snprintf(id, sizeof(id), "%s%d", CEP_SUB_PREFIX, no);
-    snprintf(which, sizeof(which), "%d", no);
-
-    if (subCreate(&alloc, id, wP->entity, wP->type, wP->attribute, wP->q, which) == false)
-    {
-      wP->sub = -1;
-      ok      = false;
-      continue;
-    }
-
-    if (subN == subMax)
-    {
-      subMax = (subMax == 0) ? 16 : subMax * 2;
-      subV   = realloc(subV, subMax * sizeof(Sub));
-    }
-    subV[subN].key  = strdup(key);
-    subV[subN].no   = no;
-    subV[subN].used = true;
-    ++subN;
-    wP->sub = no;
+    if (subInTenants(&alloc, &subV[ix], wP) == false)
+      ok = false;
   }
 
   //
-  // The ones no watch has any more
+  // The ones no watch has any more - in every tenant they were made in
   //
   int kept = 0;
   for (int ix = 0; ix < subN; ix++)
@@ -340,8 +453,16 @@ bool subsApply(CepRules* rulesP)
 
     char id[128];
     snprintf(id, sizeof(id), "%s%d", CEP_SUB_PREFIX, subV[ix].no);
-    subDelete(&alloc, id);
+    for (int tx = 0; (tx < subV[ix].inN) && (tx < tenants); tx++)
+    {
+      if (subV[ix].inV[tx] == false)
+        continue;
+      tenantUse(tenantV[tx].name);
+      subDelete(&alloc, id);
+    }
+    tenantUse(NULL);
     free(subV[ix].key);
+    free(subV[ix].inV);
   }
   subN = kept;
 
@@ -354,12 +475,15 @@ bool subsApply(CepRules* rulesP)
 // -----------------------------------------------------------------------------
 //
 // subsFree - the table of the watches' subscriptions freed (cep.so's close; the subscriptions themselves stay in
-// the broker: the next start removes them, subsInit)
+// the broker: the next start removes them, subsInit and the sweep of each tenant)
 //
 void subsFree(void)
 {
   for (int ix = 0; ix < subN; ix++)
+  {
     free(subV[ix].key);
+    free(subV[ix].inV);
+  }
   free(subV);
   subV   = NULL;
   subN   = 0;

@@ -42,7 +42,7 @@
 typedef struct Item
 {
   struct Item*  next;
-  char          which[32];
+  char          which[128];                      // "<sub>[/<tenant>]", "rules", "action"
   char*         body;                            // NUL-terminated, malloc'd
   int           bodyLen;
   bool          event;                           // a notification of an event subscription - the bounded kind
@@ -62,9 +62,40 @@ int queueMax = 10000;                            // --queue-max: event notificat
 #define QUEUE_BYTES_MAX  (64LL * 1024 * 1024)    // their bodies, at most
 
 static CepRules*        rules      = NULL;       // the generation running
-static CepPatterns*     patterns   = NULL;       // its patterns' state - the host's clock
-static CepVars*         vars       = NULL;       // the events' latest values, for ${...} (vars.c)
+static CepPatterns*     patterns   = NULL;       // the patterns' state of the tenant at work (tenantEnter) - the host's clock
+static CepVars*         vars       = NULL;       // its events' latest values, for ${...} (vars.c)
 static bool             stateDirty = false;      // the patterns' state changed since --state was last written
+
+#define TENANTS_REFRESH_MS  10000                // the broker's tenants looked at again - a new one gets the rules
+
+
+
+// -----------------------------------------------------------------------------
+//
+// tenantNow - the tenant at work, "" the default one
+//
+static const char* tenantNow(void)
+{
+  return (cepTenantNow != NULL) ? cepTenantNow : "";
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// tenantEnter - the work that follows is <name>'s: its patterns' state, its ${...} values, its requests to the
+// broker (and the actions queued, sender.c). False: not a data tenant - patterns and vars NULL
+//
+static bool tenantEnter(const char* name)
+{
+  CepTenant* tP = tenantOf(name);
+
+  patterns = (tP != NULL) ? tP->patterns : NULL;
+  vars     = (tP != NULL) ? tP->vars     : NULL;
+  tenantUse((tP != NULL) ? tP->name : NULL);
+
+  return (tP != NULL);
+}
 
 const CepTransport* cepTransport = NULL;         // the way to the broker (cepTransport.h) - set before engineRun
 
@@ -95,6 +126,22 @@ typedef struct Stats
 } Stats;
 
 static Stats* statsList = NULL;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// droppedOf - a rule's matches (values: window values) dropped, in all the tenants it runs in
+//
+static long long droppedOf(const char* ruleId, bool values)
+{
+  long long n = 0;
+
+  for (int ix = 0; ix < tenants; ix++)
+    n += values ? patternsDroppedValues(tenantV[ix].patterns, ruleId) : patternsDropped(tenantV[ix].patterns, ruleId);
+
+  return n;
+}
 
 
 
@@ -381,6 +428,7 @@ typedef struct Stepper
 {
   struct Stepper*  next;
   char*            ruleId;
+  char*            tenant;                       // where it runs - its rule's event's tenant ("" the default)
   char*            key;                          // the partition (the event's entity, "" - the rule is not partitioned)
   int              untilSub;                     // the subscription of the 'until' event (stable across reloads), -1: none
   char*            attribute;
@@ -408,6 +456,7 @@ static void stepperFree(Stepper* sP)
   free(sP->idV);
   free(sP->valueV);
   free(sP->ruleId);
+  free(sP->tenant);
   free(sP->key);
   free(sP->attribute);
   free(sP);
@@ -422,6 +471,7 @@ static void stepperFree(Stepper* sP)
 typedef struct StepperKey
 {
   const char*  ruleId;                           // NULL: by 'until'
+  const char*  tenant;                           // the tenant of the step, or of the 'until' event
   const char*  key;
   const char*  attribute;
   int          untilSub;
@@ -443,7 +493,9 @@ static void steppersDrop(const StepperKey* kP)
     Stepper* sP = *prevPP;
     bool     drop;
 
-    if (kP->ruleId != NULL)
+    if (strcmp(sP->tenant, kP->tenant) != 0)
+      drop = false;
+    else if (kP->ruleId != NULL)
       drop = (strcmp(sP->ruleId, kP->ruleId) == 0) && (strcmp(sP->key, kP->key) == 0) && (strcmp(sP->attribute, kP->attribute) == 0);
     else
       drop = (sP->untilSub == kP->untilSub) && ((sP->key[0] == 0) || (strcmp(sP->key, kP->entity) == 0));
@@ -473,7 +525,7 @@ static bool stepperStart(CorAlloc* allocP, CepRule* ruleP, CepAction* aP, const 
 
   const char* key = ruleP->partitioned ? entity : "";
 
-  StepperKey same = { ruleP->id, key, aP->attribute, -1, NULL };
+  StepperKey same = { ruleP->id, tenantNow(), key, aP->attribute, -1, NULL };
   steppersDrop(&same);
 
   Stepper* sP = calloc(1, sizeof(Stepper));
@@ -514,6 +566,7 @@ static bool stepperStart(CorAlloc* allocP, CepRule* ruleP, CepAction* aP, const 
   long long now = nowMs();
 
   sP->ruleId    = strdup(ruleP->id);
+  sP->tenant    = strdup(tenantNow());
   sP->key       = strdup(key);
   sP->untilSub  = ((aP->until >= 0) && (rules != NULL)) ? rules->watchV[ruleP->untilV[aP->until].watch].sub : -1;
   sP->attribute = strdup(aP->attribute);
@@ -555,6 +608,8 @@ static long long steppersRun(CorAlloc* allocP, long long now)
     else if (now >= sP->nextAt)
     {
       int atBound = 0;
+
+      tenantUse(sP->tenant);                       // its PATCHes to its tenant (the sender keeps a copy)
 
       for (int ix = 0; ix < sP->n; ix++)
       {
@@ -603,6 +658,7 @@ static long long steppersRun(CorAlloc* allocP, long long now)
     prevPP = &sP->next;
   }
 
+  tenantUse(NULL);                               // not a stepper's string - it may be freed
   return next;
 }
 
@@ -878,7 +934,7 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
     corTreeChildAdd(bodyP, atP);
   }
 
-  long long dropped = patternsDropped(patterns, sP->id);
+  long long dropped = droppedOf(sP->id, false);
   if (dropped > 0)
   {
     CorNode* dP = corTreeObject(allocP, "droppedMatches");
@@ -889,7 +945,7 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
   }
   sP->droppedWritten = dropped;
 
-  long long droppedValues = patternsDroppedValues(patterns, sP->id);
+  long long droppedValues = droppedOf(sP->id, true);
   if (droppedValues > 0)
   {
     CorNode* dP = corTreeObject(allocP, "droppedValues");
@@ -932,7 +988,11 @@ static void statsWrite(CorAlloc* allocP, Stats* sP)
   CepResponse resp;
 
   snprintf(path, sizeof(path), "/entities/%s/attrs", urlEncode(allocP, sP->id));
-  if ((cepTransport->statsPost(allocP, path, bodyP, &resp) == false) || ((resp.status != 204) && (resp.status != 404)))
+  const char* before = tenantUse(cep.rulesTenant);   // the Rule entities' tenant
+  bool        posted = cepTransport->statsPost(allocP, path, bodyP, &resp);
+  tenantUse(before);
+
+  if ((posted == false) || ((resp.status != 204) && (resp.status != 404)))
     logLine("rule %s: its statistics not written - %s", sP->id, (resp.status != 0) ? ((resp.text != NULL) ? resp.text : "no body") : resp.error);
 
   sP->dirty     = false;
@@ -951,7 +1011,7 @@ static void statsFlush(CorAlloc* allocP, bool force)
 
   for (Stats* sP = statsList; sP != NULL; sP = sP->next)
   {
-    if ((patternsDropped(patterns, sP->id) != sP->droppedWritten) || (patternsDroppedValues(patterns, sP->id) != sP->droppedValuesWritten))
+    if ((droppedOf(sP->id, false) != sP->droppedWritten) || (droppedOf(sP->id, true) != sP->droppedValuesWritten))
       sP->dirty = true;                          // a drop is news without a fire too
 
     if ((sP->dirty == true) && (sP->seen == true) && (force || (now - sP->writtenAt >= statsInterval)))
@@ -1090,9 +1150,15 @@ static void fireCb(CepRule* ruleP, const char* entity, void* ctx)
 //
 // eventHandle - a notification of subscription <sub>: for each entity in it holding the attribute, the rules of the watch
 //
-static void eventHandle(CorAlloc* allocP, int sub, char* body)
+static void eventHandle(CorAlloc* allocP, int sub, const char* tenant, char* body)
 {
   int n = -1;                                    // the watch of the subscription
+
+  if (tenantEnter(tenant) == false)
+  {
+    logLine("a notification from tenant %s - not one the rules run in, ignored", TENANT_TEXT(tenant));
+    return;
+  }
 
   for (int ix = 0; (rules != NULL) && (ix < rules->watches); ix++)
   {
@@ -1126,7 +1192,7 @@ static void eventHandle(CorAlloc* allocP, int sub, char* body)
 
     if (rules->watchV[n].sub >= 0)                                          // an 'until' event stops its steps
     {
-      StepperKey until = { NULL, NULL, NULL, rules->watchV[n].sub, idP->value.s };
+      StepperKey until = { NULL, tenantNow(), NULL, NULL, rules->watchV[n].sub, idP->value.s };
       steppersDrop(&until);
     }
 
@@ -1177,6 +1243,7 @@ CorNode* steppersSave(CorAlloc* aP, long long nowMono, long long nowWall)
     CorNode* tV = corTreeArray(aP, "targets");
 
     corTreeChildAdd(oP, corTreeString(aP, "rule", sP->ruleId));
+    corTreeChildAdd(oP, corTreeString(aP, "tenant", sP->tenant));
     corTreeChildAdd(oP, corTreeString(aP, "key", sP->key));
     corTreeChildAdd(oP, corTreeString(aP, "attribute", sP->attribute));
     corTreeChildAdd(oP, corTreeInteger(aP, "nextAt", sP->nextAt + toWall));
@@ -1210,6 +1277,7 @@ int steppersLoad(CorNode* topP, long long nowMono, long long nowWall)
   for (CorNode* oP = ((vP != NULL) && (vP->type == CorArray)) ? vP->value.head : NULL; oP != NULL; oP = oP->next)
   {
     CorNode* ruleP   = corTreeLookup(oP, "rule");
+    CorNode* tenantP = corTreeLookup(oP, "tenant");   // none: a state of 0.1's, its one tenant
     CorNode* keyP    = corTreeLookup(oP, "key");
     CorNode* attrP   = corTreeLookup(oP, "attribute");
     CorNode* nextP   = corTreeLookup(oP, "nextAt");
@@ -1249,6 +1317,7 @@ int steppersLoad(CorNode* topP, long long nowMono, long long nowWall)
     }
 
     sP->ruleId     = strdup(ruleP->value.s);
+    sP->tenant     = strdup(((tenantP != NULL) && (tenantP->type == CorString)) ? tenantP->value.s : stateLegacyTenant());
     sP->key        = strdup(keyP->value.s);
     sP->attribute  = strdup(attrP->value.s);
     sP->nextAt     = nextP->value.i + toMono;
@@ -1291,9 +1360,10 @@ static void steppersAdopt(void)
         aP = xP;
     }
 
-    if (aP == NULL)
+    if ((aP == NULL) || (ruleApplies(ruleP, sP->tenant) == false))
     {
-      logLine("rule %s: step of %s not continued - %s", sP->ruleId, sP->attribute, (ruleP == NULL) ? "the rule is gone" : "the rule steps it no more");
+      logLine("rule %s: step of %s not continued - %s", sP->ruleId, sP->attribute, (ruleP == NULL) ? "the rule is gone" :
+              (aP == NULL) ? "the rule steps it no more" : "the rule runs in its tenant no more");
       stepperFree(sP);
       continue;
     }
@@ -1362,12 +1432,22 @@ static void rightsCheck(void)
       else
         continue;
 
-      if (authorMay(&alloc, ruleP->author, method, path, body, why, sizeof(why)) == 0)
+      for (int tx = 0; tx < tenants; tx++)       // in each tenant it runs in - the rights may differ
       {
-        char text[1024];
-        int  len = snprintf(text, sizeof(text), "%s\n%d\n0\n%s", ruleP->id, ax + 1, why);
-        engineQueue("action", text, (len < (int) sizeof(text)) ? len : (int) sizeof(text) - 1);   // lastError, once the rule's stats are there
+        if (ruleApplies(ruleP, tenantV[tx].name) == false)
+          continue;
+
+        tenantUse(tenantV[tx].name);
+        if (authorMay(&alloc, ruleP->author, method, path, body, why, sizeof(why)) == 0)
+        {
+          char text[1024];
+          int  len = snprintf(text, sizeof(text), "%s\n%d\n0\n%s%s%s%s", ruleP->id, ax + 1, (tenants > 1) ? "tenant " : "",
+                              (tenants > 1) ? TENANT_TEXT(tenantV[tx].name) : "", (tenants > 1) ? ": " : "", why);
+          engineQueue("action", text, (len < (int) sizeof(text)) ? len : (int) sizeof(text) - 1);   // lastError, once the rule's stats are there
+          break;                                 // once is enough for lastError
+        }
       }
+      tenantUse(NULL);
     }
   }
 
@@ -1383,9 +1463,22 @@ static void rightsCheck(void)
 static long long reloadAt      = 0;              // a reload failed: tried again at this time (0: none due)
 static long long reloadAfterMs = 0;              // the wait before the next try - 1 s, doubling to 30 s
 
+static void tenantsAdopt(void)                   // every data tenant's state on the rules running
+{
+  long long now = nowMs();
+
+  for (int ix = 0; ix < tenants; ix++)
+  {
+    patternsAdopt(tenantV[ix].patterns, rules, now);
+    varsKeep(tenantV[ix].vars, rules);
+  }
+}
+
 static void rulesReload(void)
 {
   CepRules* newP = rulesLoad();
+
+  tenantsRefresh(NULL, nowMs());                 // a tenant new meanwhile gets the rules too (adopted below)
 
   if (newP == NULL)                              // the broker did not answer, or answered an error (rulesLoad logs it)
   {
@@ -1403,8 +1496,8 @@ static void rulesReload(void)
         logLine("out of memory for the rules");
         exit(1);
       }
-      patternsAdopt(patterns, rules, nowMs());
     }
+    tenantsAdopt();
 
     logLine("the rules not read - the %d running kept; read again in %lld s", rules->rules, reloadAfterMs / 1000);
     return;
@@ -1416,18 +1509,17 @@ static void rulesReload(void)
   cepTransport->watchesApply(newP);
   rulesFree(rules);
   rules = newP;
-  patternsAdopt(patterns, rules, nowMs());
+  tenantsAdopt();
   stateDirty = true;
-  varsKeep(vars, rules);
 
-  Stepper** stepPP = &stepperList;                     // the steps of rules gone stop
+  Stepper** stepPP = &stepperList;                     // the steps of rules gone stop - or no more in their tenant
   while (*stepPP != NULL)
   {
     Stepper* tP    = *stepPP;
     bool     found = false;
 
     for (int ix = 0; (ix < rules->rules) && (found == false); ix++)
-      found = (strcmp(rules->ruleV[ix].id, tP->ruleId) == 0);
+      found = (strcmp(rules->ruleV[ix].id, tP->ruleId) == 0) && ruleApplies(&rules->ruleV[ix], tP->tenant);
 
     if (found)
       stepPP = &tP->next;
@@ -1482,13 +1574,10 @@ static void engineFree(CorAlloc* allocP)
     rulesFree(rules);
   rules = NULL;
 
-  if (patterns != NULL)
-    patternsFree(patterns);
+  tenantsFree();                                 // every tenant's patterns and vars
   patterns = NULL;
-
-  if (vars != NULL)
-    varsFree(vars);
-  vars = NULL;
+  vars     = NULL;
+  stateRelease();
 
   for (Stepper** listPP = &stepperList; listPP != NULL; listPP = (listPP == &stepperList) ? &stepperPending : NULL)
   {
@@ -1560,19 +1649,12 @@ void engineRun(void)
 
   corAllocBufferInit(&alloc, buf, sizeof(buf), 256 * 1024, NULL, "corCep event");
 
-  patterns = patternsNew(0);
-  vars     = varsNew();
-  if ((patterns == NULL) || (vars == NULL))
-  {
-    logLine("out of memory for the patterns' state");
-    exit(1);
-  }
+  stateLoad();                                   // before the first rules: each tenant's states found again by id, as it is made
+  rulesReload();                                 // the tenants too
 
-  stateLoad(patterns);                           // before the first rules: their states found again by id
-  rulesReload();
-
-  long long renewedAt = nowMs();
-  long long savedAt   = 0;
+  long long renewedAt   = nowMs();
+  long long refreshedAt = nowMs();
+  long long savedAt     = 0;
 
   while (true)
   {
@@ -1584,7 +1666,7 @@ void engineRun(void)
       int left = cepTransport->drain(2000);              // the PATCHes made go out first - 2 s at most
       if (left > 0)
         logLine("stopping: %d action%s not sent", left, (left == 1) ? "" : "s");
-      stateSave(patterns);
+      stateSave();
       statsFlush(&alloc, true);
       logLine("stopped (signal %d)%s", (int) cepStopping, (stateFile != NULL) ? " - the state written" : "");
       if (cepExitOnStop)
@@ -1611,7 +1693,25 @@ void engineRun(void)
     if ((reloadAt != 0) && (now >= reloadAt))     // a reload that failed, tried again
       rulesReload();
 
-    long long next = patternsTimers(patterns, rules, now, fireCb, &alloc);
+    //
+    // A tenant new in the broker: the rules run in it too - its subscriptions made (--tenants: a fixed list)
+    //
+    if ((cep.tenants == NULL) && (now - refreshedAt >= TENANTS_REFRESH_MS))
+    {
+      refreshedAt = now;
+      if (tenantsRefresh(rules, now) > 0)
+        cepTransport->watchesApply(rules);
+    }
+
+    long long next = 0;
+    for (int ix = 0; ix < tenants; ix++)          // each tenant's deadlines, in it
+    {
+      tenantEnter(tenantV[ix].name);
+      long long at = patternsTimers(patterns, rules, now, fireCb, &alloc);
+      if ((at != 0) && ((next == 0) || (at < next)))
+        next = at;
+    }
+
     long long step = steppersRun(&alloc, nowMs());
 
     if ((step != 0) && ((next == 0) || (step < next)))
@@ -1622,7 +1722,7 @@ void engineRun(void)
 
     if (stateDirty && (stateFile != NULL) && (nowMs() - savedAt >= 1000))
     {
-      stateSave(patterns);
+      stateSave();
       stateDirty = false;
       savedAt    = nowMs();
     }
@@ -1639,8 +1739,11 @@ void engineRun(void)
       rulesReload();
     else if (strcmp(iP->which, "action") == 0)
       actionReport(iP->body);
-    else
-      eventHandle(&alloc, atoi(iP->which), iP->body);
+    else                                         // "<sub>" - the default tenant - or "<sub>/<tenant>"
+    {
+      const char* slash = strchr(iP->which, '/');
+      eventHandle(&alloc, atoi(iP->which), (slash != NULL) ? slash + 1 : "", iP->body);
+    }
 
     free(iP->body);
     free(iP);

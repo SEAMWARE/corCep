@@ -146,6 +146,7 @@ struct CepPatterns
   State**    ruleStateV;                         // the generation's rules' states, by rule index
   int        ruleStates;
   long long  wallAtZeroMs;                       // 0: the wall clock is the host's; else the wall clock is this + 'now'
+  const char* tenant;                            // whose state (tenants.c) - a rule runs here only if ruleApplies; NULL: a dry run's, every rule
 };
 
 
@@ -361,12 +362,15 @@ void patternsAdopt(CepPatterns* psP, CepRules* rulesP, long long now)
 //
 // patternsNew - an empty state; <wallAtZeroMs> 0: the host's wall clock, else the wall clock at 'now' 0 (a dry run)
 //
-CepPatterns* patternsNew(long long wallAtZeroMs)
+CepPatterns* patternsNew(long long wallAtZeroMs, const char* tenant)
 {
   CepPatterns* psP = calloc(1, sizeof(CepPatterns));
 
   if (psP != NULL)
+  {
     psP->wallAtZeroMs = wallAtZeroMs;
+    psP->tenant       = tenant;                  // the caller's string, kept as long as psP is
+  }
 
   return psP;
 }
@@ -827,7 +831,7 @@ void patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch, const char* en
     State*   sP    = psP->ruleStateV[ix];
     int      ev    = -1;
 
-    if ((ruleP->kind == CepPatternAny) || (sP == NULL))
+    if ((ruleP->kind == CepPatternAny) || (sP == NULL) || (ruleApplies(ruleP, psP->tenant) == false))
       continue;
 
     for (int ex = 0; ex < ruleP->events; ex++)
@@ -903,7 +907,7 @@ void patternsEvent(CepPatterns* psP, CepRules* rulesP, int watch, const char* en
     CepRule* ruleP = &rulesP->ruleV[ix];
     bool     hit   = false;
 
-    if (ruleP->kind != CepPatternAny)
+    if ((ruleP->kind != CepPatternAny) || (ruleApplies(ruleP, psP->tenant) == false))
       continue;
 
     for (int ex = 0; ex < ruleP->events; ex++)
@@ -970,7 +974,7 @@ long long patternsTimers(CepPatterns* psP, CepRules* rulesP, long long now, CepF
     CepRule* ruleP = &rulesP->ruleV[ix];
     State*   sP    = psP->ruleStateV[ix];
 
-    if (sP == NULL)
+    if ((sP == NULL) || (ruleApplies(ruleP, psP->tenant) == false))
       continue;
 
     for (Part* pP = sP->parts; pP != NULL; pP = pP->next)

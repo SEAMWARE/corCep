@@ -98,7 +98,7 @@ authUp() {
 case "$1" in
   up)
     docker rm -f "$NAME" > /dev/null 2>&1
-    docker run -d --rm --name "$NAME" --network host "$IMAGE" --database ramDB --troe none --port "$PORT" > /dev/null || exit 1
+    docker run -d --rm --name "$NAME" --network host "$IMAGE" --database ramDB --troe none --port "$PORT" --apiPlugins admin > /dev/null || exit 1
 
     for ((i = 0; i < 100; i++)); do
       curl -s -o /dev/null "http://127.0.0.1:$PORT/ngsi-ld/v1/types" && { echo "broker: $IMAGE on port $PORT"; authUp; exit $?; }

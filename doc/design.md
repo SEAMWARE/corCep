@@ -211,9 +211,11 @@ automations and Node-RED flows (product formats). None is widely adopted for CEP
    Amended 2026-11-19 (KZ), for 0.2: in the data tenant a rule leaks into what doesn't name a type (`q` and `attrs`
    without `type`, a geo-query on a rule's `location`, `/types`, `/attributes`, subscriptions without a type). The
    rules move to a tenant of their own, `--rules-tenant` (default `cep`), reached with the plain `NGSILD-Tenant`
-   header. In coraine it is a reserved tenant: a database prefix of its own, reachable only in process (the plugin),
-   from 127.0.0.1 without auth, or with an operator role - for anyone else a 404 NonexistentTenant; left out of
-   tenant listings and federation. Against another broker it is an ordinary tenant.
+   header. In coraine it is a reserved tenant (`--reservedTenants`; `cep.so` reserves it itself): a database of its
+   own, left out of `GET /admin/tenants`, so never a data tenant. It is reached with the plain header and the
+   broker's normal auth - no address or role of its own: the rule editors write the rules on the normal path.
+   Against another broker it is an ordinary tenant. `--tenant T` keeps 0.1's one tenant: the rules and the data
+   both in T.
    A rule is **omnipresent** by default - it runs in every tenant, new ones too - unless it has an attribute `tenant`
    (a String, or an Array of String). An event in a tenant is matched, counted and acted on in that tenant only (the
    pattern state is per tenant; actions and conditions in the event's tenant); the watches are subscribed in every
