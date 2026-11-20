@@ -22,6 +22,7 @@ echo "===================================="
 then='{"type": "JsonProperty", "json": [{"entity": "urn:ngsi-ld:Light:mark", "set": {"mark": 1}}]}'
 madrid='"location": {"type": "GeoProperty", "value": {"type": "Point", "coordinates": [-3.7038, 40.4168]}}'
 ahead=3
+[ "$CEP_PLUGIN" == "1" ] && ahead=6              # the plugin's start is a coraine's restart: on a slow runner, seconds
 [ -n "$CEP_RUN" ] && ahead=30                    # under valgrind corCep (a coraine holding it) is up only seconds later
 soon=$(python3 -I -c 'import datetime, sys; print((datetime.datetime.now() + datetime.timedelta(seconds=int(sys.argv[1]))).strftime("%H:%M:%S"))' "$ahead")
 echo "$soon" > "$CEP_TEST_DIR/soon"
