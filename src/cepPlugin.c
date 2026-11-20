@@ -188,12 +188,10 @@ static int cepInit(const char* configFile, const BridgeBroker* brokerP)
 
     if (reserve == NULL)
       logLine("this coraine does not reserve tenants - the rules tenant '%s' is an ordinary one", cep.rulesTenant);
-    else if (reserve(cep.rulesTenant) == false)
-    {
-      logLine("the rules tenant '%s' could not be reserved - an ordinary tenant of that name has data (corCep 0.1's --cep-tenant?)."
-              " --cep-tenant %s keeps it as it was; --cep-rules-tenant names another", cep.rulesTenant, cep.rulesTenant);
-      return BRIDGE_ERR;
-    }
+    else if (reserve(cep.rulesTenant) == false)  // never a reason not to run: the broker would not start (a bridge's init failing stops it)
+      logLine("the rules tenant '%s' is an ordinary one - a tenant of that name had data before it could be reserved."
+              " The rules run; they show in that tenant's queries, and it counts as a data tenant to other plugins."
+              " To keep them apart: move that data, or --cep-rules-tenant names another tenant", cep.rulesTenant);
 
     tenantVisitHook = (void (*)(void (*)(const char*, void*), void*)) dlsym(RTLD_DEFAULT, "tenantDataVisit");
   }

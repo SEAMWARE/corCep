@@ -213,7 +213,9 @@ a geo-query on its `location`.
 
 Which tenants there are: inside coraine (`cep.so`), coraine's own list, which leaves out the tenants coraine
 reserves. `cep.so` reserves the rules tenant itself (a coraine with `--reservedTenants`): coraine keeps it in a database of its own
-and leaves it out of `GET /admin/tenants`. An ordinary tenant `cep` that already has data stops `cep.so`. Run as a
+and leaves it out of `GET /admin/tenants`. If an ordinary tenant `cep` already has data (rules written while `cep.so` was not loaded), it cannot be
+reserved: `cep.so` says so in the log and runs on, the rules tenant an ordinary one - never a reason for
+corCep, or the broker, not to start. Run as a
 service, corCep reads `GET /admin/tenants` (coraine with `--apiPlugins admin`) every 10 s; start coraine with
 `--reservedTenants cep` to keep the rules tenant apart there too. Against a broker without it, `--tenants` names
 them; without that, the rules run in the default tenant only.
