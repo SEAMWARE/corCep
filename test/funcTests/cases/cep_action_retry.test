@@ -11,6 +11,10 @@
 # The broker fails on demand: corCep talks to ftFlakyBroker.py, a proxy in front of the test broker that answers
 # PATCHes of the entities in $FAIL itself (503, or no answer) and logs every PATCH of attributes.
 #
+# The broker's 404 title: "Not Found" in coraine 0.7.0 (the image of the standalone run, test/funcTests/broker.sh),
+# "Entity not found" since coraine#623 (the plugin run, inside the coraine under test). Both are accepted until the
+# standalone image is a release with #623 - then only "Entity not found".
+#
 --NAME--
 actions retried for --retry-for (5xx, no answer), in order per target, then dropped and counted; 404 not retried
 
@@ -139,7 +143,7 @@ tries: 3 or more - yes
 
 04. A 404 is not retried: one PATCH, the error at once
 ======================================================
-rule urn:ngsi-ld:Rule:gone: action 1 - PATCH urn:ngsi-ld:Light:nowhere: {"type":"https://uri.etsi.org/ngsi-ld/errors/ResourceNotFound","title":"Not Found","status":404,"detail":"entity 'urn:ngsi-ld:Light:nowhere' not found"}
+rule urn:ngsi-ld:Rule:gone: action 1 - PATCH urn:ngsi-ld:Light:nowhere: {"type":"https://uri.etsi.org/ngsi-ld/errors/ResourceNotFound","title":"REGEX((Not Found|Entity not found))","status":404,"detail":"entity 'urn:ngsi-ld:Light:nowhere' not found"}
 tries: 1
 
 

@@ -10,6 +10,10 @@
 #   - the Rule subscription watches when/then/enabled/name only: writing the statistics does not read the rules again
 #   - the count goes on across a restart: from the Rule entity's 'fired'
 #
+# The broker's 404 title: "Not Found" in coraine 0.7.0 (the image of the standalone run, test/funcTests/broker.sh),
+# "Entity not found" since coraine#623 (the plugin run, inside the coraine under test). Both are accepted until the
+# standalone image is a release with #623 - then only "Entity not found".
+#
 --NAME--
 Rule statistics: fired, firedAt, lastError written to the Rule entity; no reload from them; the count survives a restart
 
@@ -84,7 +88,7 @@ PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
 PATCH /entities/urn:ngsi-ld:WallSwitch:room-2-14/attrs: 204
 fired {"type": "Property", "value": 2}
 firedAt {"type": "Property", "value": {"@type": "DateTime", "@value": "REGEX(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,3})?Z)"}}
-lastError {"observedAt": "REGEX(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,3})?Z)", "type": "Property", "value": "action 2: PATCH urn:ngsi-ld:Light:nowhere: {\"type\":\"https://uri.etsi.org/ngsi-ld/errors/ResourceNotFound\",\"title\":\"Not Found\",\"status\":404,\"detail\":\"entity 'urn:ngsi-ld:Light:nowhere' not found\"}"}
+lastError {"observedAt": "REGEX(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,3})?Z)", "type": "Property", "value": "action 2: PATCH urn:ngsi-ld:Light:nowhere: {\"type\":\"https://uri.etsi.org/ngsi-ld/errors/ResourceNotFound\",\"title\":\"REGEX((Not Found|Entity not found))\",\"status\":404,\"detail\":\"entity 'urn:ngsi-ld:Light:nowhere' not found\"}"}
 
 
 03. The rules were read once - the statistics written did not read them again
