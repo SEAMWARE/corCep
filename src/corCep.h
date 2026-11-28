@@ -16,7 +16,7 @@
 #include "corTree/CorNode.h"                     // CorNode
 #include "corRest/CorRestVerb.h"                 // CorRestVerb
 
-#define CORCEP_VERSION     "0.2.0"
+#define CORCEP_VERSION     "0.8.0"
 #define CEP_SUB_PREFIX     "urn:ngsi-ld:Subscription:corcep-"
 #define CEP_SUB_RULES      "urn:ngsi-ld:Subscription:corcep-rules"
 

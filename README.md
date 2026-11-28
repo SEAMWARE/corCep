@@ -80,7 +80,7 @@ that commit (`GET /build`) - coraine's CI runs these tests against the coraine i
 have no releases of their own:
 
 ```
-corCep 0.2.0
+corCep 0.8.0
   corCep     e4f1ca336bcd
   corBase    773e6fe8fe2c
   ...
@@ -114,7 +114,9 @@ sudo apt install corcep
 `packaging/deb/build.sh <out>` builds the package in a container of the distribution;
 `packaging/deb/test-install.sh <dir>` installs it in a clean one, runs it, purges it.
 
-**A release** is a tag on `main`, `v<version>` - the version in `src/corCep.h`; `.github/workflows/packages.yml`
+**A release** is a tag on `main`, `v<version>` - the version in `src/corCep.h`. From 0.8.0 corCep is released with
+coraine, under coraine's version: the tag goes on the commit coraine's pre-release campaign tested, and coraine's
+release checks that it does. `.github/workflows/packages.yml`
 builds and tests both, pushes the image, makes the GitHub release with the packages and adds them to the apt
 repository. A pull request touching the build builds and tests both, pushing nothing.
 
